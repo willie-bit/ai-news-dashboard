@@ -18,27 +18,27 @@ interface FeedConfig {
 
 const FEEDS: FeedConfig[] = [
   {
-    url: "https://news.google.com/rss/search?q=artificial+intelligence&hl=en-US&gl=US&ceid=US:en",
+    url: "https://news.google.com/rss/search?q=%EC%9D%B8%EA%B3%B5%EC%A7%80%EB%8A%A5&hl=ko&gl=KR&ceid=KR:ko",
     source: "Google News",
     category: "General AI",
   },
   {
-    url: "https://news.google.com/rss/search?q=machine+learning+deep+learning&hl=en-US&gl=US&ceid=US:en",
+    url: "https://news.google.com/rss/search?q=%EB%A8%B8%EC%8B%A0%EB%9F%AC%EB%8B%9D+%EB%94%A5%EB%9F%AC%EB%8B%9D&hl=ko&gl=KR&ceid=KR:ko",
     source: "Google News",
     category: "Machine Learning",
   },
   {
-    url: "https://news.google.com/rss/search?q=ChatGPT+OR+Claude+OR+Gemini+LLM&hl=en-US&gl=US&ceid=US:en",
+    url: "https://news.google.com/rss/search?q=ChatGPT+OR+Claude+OR+Gemini+%EB%8C%80%EA%B7%9C%EB%AA%A8+%EC%96%B8%EC%96%B4%EB%AA%A8%EB%8D%B8&hl=ko&gl=KR&ceid=KR:ko",
     source: "Google News",
     category: "LLM",
   },
   {
-    url: "https://news.google.com/rss/search?q=AI+startup+funding&hl=en-US&gl=US&ceid=US:en",
+    url: "https://news.google.com/rss/search?q=AI+%EC%8A%A4%ED%83%80%ED%8A%B8%EC%97%85+%ED%88%AC%EC%9E%90&hl=ko&gl=KR&ceid=KR:ko",
     source: "Google News",
     category: "Industry",
   },
   {
-    url: "https://news.google.com/rss/search?q=AI+regulation+policy+ethics&hl=en-US&gl=US&ceid=US:en",
+    url: "https://news.google.com/rss/search?q=AI+%EA%B7%9C%EC%A0%9C+%EC%A0%95%EC%B1%85+%EC%9C%A4%EB%A6%AC&hl=ko&gl=KR&ceid=KR:ko",
     source: "Google News",
     category: "Policy & Ethics",
   },
