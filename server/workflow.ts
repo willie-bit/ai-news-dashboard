@@ -49,13 +49,25 @@ async function uploadFileToMiso(
   formData.append("file", blob, originalName);
   formData.append("user", "construction-workflow-user");
 
-  const response = await fetch(`${MISO_API_BASE}/files/upload`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: formData,
-  });
+  let response: globalThis.Response;
+  try {
+    response = await fetch(`${MISO_API_BASE}/files/upload`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: formData,
+    });
+  } catch (err) {
+    console.error("[WORKFLOW] 파일 업로드 네트워크 오류:", err);
+    throw new Error(
+      JSON.stringify({
+        error: `MISO API 연결 실패: ${(err as Error).message}`,
+        resolution: "네트워크 연결 또는 프록시 설정을 확인해주세요. 회사 VPN이 필요할 수 있습니다.",
+        status: 502,
+      })
+    );
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -86,14 +98,26 @@ async function runWorkflow(
     user: "construction-workflow-user",
   };
 
-  const response = await fetch(`${MISO_API_BASE}/workflows/run`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  let response: globalThis.Response;
+  try {
+    response = await fetch(`${MISO_API_BASE}/workflows/run`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.error("[WORKFLOW] 워크플로우 실행 네트워크 오류:", err);
+    throw new Error(
+      JSON.stringify({
+        error: `MISO API 연결 실패: ${(err as Error).message}`,
+        resolution: "네트워크 연결 또는 프록시 설정을 확인해주세요. 회사 VPN이 필요할 수 있습니다.",
+        status: 502,
+      })
+    );
+  }
 
   if (!response.ok) {
     const errorData = (await response.json().catch(() => null)) as {

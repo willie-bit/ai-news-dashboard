@@ -5,7 +5,7 @@ import path from "path";
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 
 // 회사 프록시/방화벽 SSL 인증서 문제 우회 (개발 환경용)
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = process.env.NODE_TLS_REJECT_UNAUTHORIZED || "1";
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 console.log("[ENV] MISO_API_KEY:", process.env.MISO_API_KEY ? "설정됨" : "미설정");
 import express from "express";
