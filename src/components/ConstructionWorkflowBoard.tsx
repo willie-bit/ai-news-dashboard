@@ -128,16 +128,6 @@ function JsonTreeViewer({ data, depth = 0 }: { data: unknown; depth?: number }) 
   }
 
   if (typeof data === "string") {
-    // Try to parse as JSON for nested JSON strings
-    if (data.startsWith("{") || data.startsWith("[")) {
-      try {
-        const parsed = JSON.parse(data);
-        return <JsonTreeViewer data={parsed} depth={depth} />;
-      } catch {
-        // not JSON, render as string
-      }
-    }
-
     if (data.length > 200) {
       return (
         <span className="wf-json-string wf-json-long-string">
@@ -219,73 +209,120 @@ function JsonTreeViewer({ data, depth = 0 }: { data: unknown; depth?: number }) 
 }
 
 function stripMarkdownCodeBlock(text: string): string {
-  // ```json ... ``` 또는 ``` ... ``` 패턴 제거
-  return text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "");
+  let cleaned = text.trim();
+  // ```json\n...\n``` 패턴 제거
+  const match = cleaned.match(/^```(?:json)?\s*\n([\s\S]*?)\n```\s*$/i);
+  if (match) return match[1];
+  // 시작/끝만 있는 경우
+  cleaned = cleaned.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "");
+  return cleaned;
+}
+
+function parseOutputJson(text: string): unknown {
+  if (!text) return null;
+
+  // 1) 마크다운 코드 블록 제거 후 파싱
+  const cleaned = stripMarkdownCodeBlock(text);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // continue
+  }
+
+  // 2) 원본 그대로 파싱
+  try {
+    return JSON.parse(text);
+  } catch {
+    // continue
+  }
+
+  // 3) JSON 블록 추출 시도 ({...} 찾기)
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch {
+      // continue
+    }
+  }
+
+  return null;
+}
+
+function formatTimestamp(ts: string | number): string {
+  if (!ts) return "-";
+  let date: Date;
+  if (typeof ts === "number") {
+    // Unix timestamp (초 단위면 * 1000)
+    date = ts > 1e12 ? new Date(ts) : new Date(ts * 1000);
+  } else {
+    date = new Date(ts);
+  }
+  if (isNaN(date.getTime())) return "-";
+  return date.toLocaleString("ko-KR", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+// 섹션 키 한글 매핑
+const SECTION_LABELS: Record<string, string> = {
+  meta: "메타 정보",
+  version: "버전",
+  language: "언어",
+  purpose: "목적",
+  important_note: "참고사항",
+  input_needed_from_user: "사용자 입력 필요 항목",
+  inputs_needed_from_user: "사용자 입력 필요 항목",
+  project_basic: "프로젝트 기본 정보",
+  project_basics: "프로젝트 기본 정보",
+  contracting: "계약 관련",
+  technical: "기술 관련",
+  construction_types_catalog: "공사 종류 카탈로그",
+  scale_and_budget_framework: "규모 및 예산 프레임워크",
+  technical_requirements_matrix: "기술적 요구사항 매트릭스",
+  procurement_and_contract_checklist: "조달/계약 체크리스트",
+  vendor_recommendation_engine: "업체 추천 엔진",
+  vendor_list_from_knowledge_search: "지식검색 업체리스트",
+  deliverables_for_contract_manager: "계약 담당자 산출물",
+  next_action: "다음 단계",
+  "공사종류": "공사 종류",
+  "공사_종류": "공사 종류",
+  "규모": "공사 규모",
+  "공사규모": "공사 규모",
+  "예산": "예산",
+  "특징": "특징",
+  "기술적_요구사항": "기술적 요구사항",
+  "기술요구사항": "기술적 요구사항",
+  "추천업체": "추천 업체",
+  "추천_업체": "추천 업체",
+  "업체추천": "추천 업체",
+  "계약정보": "계약 정보",
+  "계약_정보": "계약 정보",
+};
+
+function getSectionLabel(key: string): string {
+  return SECTION_LABELS[key] || key.replace(/_/g, " ");
 }
 
 function ResultCards({ result }: { result: WorkflowResult }) {
   const outputText = result.outputs?.["전체 결과"] || "";
 
-  // Try parsing the output as JSON (strip markdown code blocks first)
-  const parsedOutput = useMemo(() => {
-    if (!outputText) return null;
-    const cleaned = stripMarkdownCodeBlock(outputText);
-    try {
-      return JSON.parse(cleaned);
-    } catch {
-      // 원본도 시도
-      try {
-        return JSON.parse(outputText);
-      } catch {
-        return null;
-      }
-    }
-  }, [outputText]);
+  const parsedOutput = useMemo(() => parseOutputJson(outputText), [outputText]);
 
-  // Extract sections from parsed output for card display
   const sections = useMemo(() => {
-    if (!parsedOutput || typeof parsedOutput !== "object") return [];
+    if (!parsedOutput || typeof parsedOutput !== "object" || Array.isArray(parsedOutput)) return [];
 
-    const result: Array<{ title: string; content: unknown }> = [];
+    const items: Array<{ title: string; content: unknown }> = [];
     const data = parsedOutput as Record<string, unknown>;
 
-    // Map common Korean keys to display sections
-    const keyMapping: Record<string, string> = {
-      "공사종류": "공사 종류",
-      "공사_종류": "공사 종류",
-      "constructionType": "공사 종류",
-      "construction_type": "공사 종류",
-      "규모": "공사 규모",
-      "공사규모": "공사 규모",
-      "공사_규모": "공사 규모",
-      "scale": "공사 규모",
-      "예산": "예산",
-      "budget": "예산",
-      "특징": "특징",
-      "features": "특징",
-      "기술적_요구사항": "기술적 요구사항",
-      "기술적요구사항": "기술적 요구사항",
-      "기술요구사항": "기술적 요구사항",
-      "technicalRequirements": "기술적 요구사항",
-      "technical_requirements": "기술적 요구사항",
-      "추천업체": "추천 업체",
-      "추천_업체": "추천 업체",
-      "업체추천": "추천 업체",
-      "업체_추천": "추천 업체",
-      "recommendedVendors": "추천 업체",
-      "recommended_vendors": "추천 업체",
-      "계약정보": "계약 정보",
-      "계약_정보": "계약 정보",
-      "contractInfo": "계약 정보",
-      "contract_info": "계약 정보",
-    };
-
     for (const [key, value] of Object.entries(data)) {
-      const displayTitle = keyMapping[key] || key;
-      result.push({ title: displayTitle, content: value });
+      items.push({ title: getSectionLabel(key), content: value });
     }
 
-    return result;
+    return items;
   }, [parsedOutput]);
 
   return (
@@ -305,17 +342,20 @@ function ResultCards({ result }: { result: WorkflowResult }) {
           <span className="wf-result-stat-label">소요 시간</span>
         </div>
         <div className="wf-result-stat">
-          <span className="wf-result-stat-value">
-            {new Date(result.created_at).toLocaleString("ko-KR", {
-              month: "short",
-              day: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </span>
+          <span className="wf-result-stat-value">{formatTimestamp(result.created_at)}</span>
           <span className="wf-result-stat-label">실행 시각</span>
         </div>
       </div>
+
+      {/* JSON 파싱 실패 시 원본 텍스트 표시 */}
+      {!parsedOutput && outputText && (
+        <div className="wf-section-card" style={{ marginBottom: "1.5rem" }}>
+          <h3 className="wf-section-title">전체 결과</h3>
+          <div className="wf-section-content">
+            <p className="wf-section-text">{outputText}</p>
+          </div>
+        </div>
+      )}
 
       {/* Parsed result cards */}
       {sections.length > 0 && (
@@ -324,7 +364,7 @@ function ResultCards({ result }: { result: WorkflowResult }) {
             <div key={i} className="wf-section-card">
               <h3 className="wf-section-title">{section.title}</h3>
               <div className="wf-section-content">
-                {renderSectionContent(section.content)}
+                <SectionContent content={section.content} depth={0} />
               </div>
             </div>
           ))}
@@ -359,7 +399,7 @@ function ResultCards({ result }: { result: WorkflowResult }) {
   );
 }
 
-function renderSectionContent(content: unknown): JSX.Element {
+function SectionContent({ content, depth = 0 }: { content: unknown; depth: number }): JSX.Element {
   if (content === null || content === undefined) {
     return <p className="wf-text-muted">정보 없음</p>;
   }
@@ -373,37 +413,76 @@ function renderSectionContent(content: unknown): JSX.Element {
   }
 
   if (Array.isArray(content)) {
-    // Check if it's an array of objects (like vendors)
-    if (content.length > 0 && typeof content[0] === "object" && content[0] !== null) {
+    if (content.length === 0) {
+      return <p className="wf-text-muted">항목 없음</p>;
+    }
+
+    // 문자열 배열
+    if (content.every((item) => typeof item === "string" || typeof item === "number")) {
       return (
-        <div className="wf-table-container">
-          <table className="wf-table">
-            <thead>
-              <tr>
-                {Object.keys(content[0] as Record<string, unknown>).map((key) => (
-                  <th key={key}>{key}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {content.map((item, i) => (
-                <tr key={i}>
-                  {Object.values(item as Record<string, unknown>).map((val, j) => (
-                    <td key={j}>{typeof val === "object" ? JSON.stringify(val) : String(val ?? "")}</td>
+        <ul className="wf-list">
+          {content.map((item, i) => (
+            <li key={i}>{String(item)}</li>
+          ))}
+        </ul>
+      );
+    }
+
+    // 객체 배열 - 얕은 경우 테이블, 깊은 경우 카드
+    if (content.length > 0 && typeof content[0] === "object" && content[0] !== null) {
+      const firstItem = content[0] as Record<string, unknown>;
+      const keys = Object.keys(firstItem);
+
+      // 값이 모두 프리미티브면 테이블
+      const allFlat = content.every((item) =>
+        Object.values(item as Record<string, unknown>).every(
+          (v) => typeof v !== "object" || v === null
+        )
+      );
+
+      if (allFlat && keys.length <= 8) {
+        return (
+          <div className="wf-table-container">
+            <table className="wf-table">
+              <thead>
+                <tr>
+                  {keys.map((key) => (
+                    <th key={key}>{getSectionLabel(key)}</th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {content.map((item, i) => (
+                  <tr key={i}>
+                    {keys.map((key) => {
+                      const val = (item as Record<string, unknown>)[key];
+                      return <td key={key}>{String(val ?? "")}</td>;
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+
+      // 복합 객체 배열은 개별 렌더링
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          {content.map((item, i) => (
+            <div key={i} style={{ paddingLeft: "0.5rem", borderLeft: "2px solid var(--border-color)", paddingTop: "0.25rem", paddingBottom: "0.25rem" }}>
+              <SectionContent content={item} depth={depth + 1} />
+            </div>
+          ))}
         </div>
       );
     }
 
-    // Simple array of primitives
+    // 혼합 배열
     return (
       <ul className="wf-list">
         {content.map((item, i) => (
-          <li key={i}>{String(item)}</li>
+          <li key={i}>{typeof item === "object" ? JSON.stringify(item) : String(item)}</li>
         ))}
       </ul>
     );
@@ -411,18 +490,36 @@ function renderSectionContent(content: unknown): JSX.Element {
 
   if (typeof content === "object") {
     const entries = Object.entries(content as Record<string, unknown>);
+
     return (
       <div className="wf-key-value-list">
-        {entries.map(([key, value]) => (
-          <div key={key} className="wf-key-value-item">
-            <span className="wf-kv-key">{key}</span>
-            <span className="wf-kv-value">
-              {typeof value === "object"
-                ? JSON.stringify(value, null, 2)
-                : String(value ?? "")}
-            </span>
-          </div>
-        ))}
+        {entries.map(([key, value]) => {
+          const isComplex = typeof value === "object" && value !== null;
+
+          if (isComplex && depth < 3) {
+            return (
+              <div key={key} style={{ marginBottom: "0.5rem" }}>
+                <div style={{ color: "var(--accent)", fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.375rem" }}>
+                  {getSectionLabel(key)}
+                </div>
+                <div style={{ paddingLeft: "0.75rem" }}>
+                  <SectionContent content={value} depth={depth + 1} />
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div key={key} className="wf-key-value-item">
+              <span className="wf-kv-key">{getSectionLabel(key)}</span>
+              <span className="wf-kv-value">
+                {isComplex
+                  ? JSON.stringify(value, null, 2)
+                  : String(value ?? "")}
+              </span>
+            </div>
+          );
+        })}
       </div>
     );
   }

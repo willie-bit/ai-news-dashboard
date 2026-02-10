@@ -26,8 +26,8 @@ export interface WorkflowResult {
   error: string | null;
   total_steps: number;
   total_tokens: number;
-  created_at: string;
-  finished_at: string;
+  created_at: string | number;
+  finished_at: string | number;
   elapsed_time: number;
 }
 
