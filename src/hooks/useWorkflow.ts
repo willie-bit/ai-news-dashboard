@@ -30,13 +30,15 @@ export function useWorkflow(): UseWorkflowReturn {
         body: formData,
       });
 
-      const data = await response.json();
+      const raw = await response.json();
 
       if (!response.ok) {
-        setError(data as WorkflowError);
+        setError(raw as WorkflowError);
         return;
       }
 
+      // MISO API가 { data: { ... } } 형태로 응답할 수 있음
+      const data = raw.data || raw;
       setResult(data as WorkflowResult);
     } catch (err) {
       setError({

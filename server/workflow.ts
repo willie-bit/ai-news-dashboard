@@ -235,7 +235,20 @@ router.post(
       );
 
       // Run the workflow
-      const result = await runWorkflow(uploadResults, apiKey);
+      const rawResult = await runWorkflow(uploadResults, apiKey);
+
+      // MISO API 응답이 { data: { ... } } 로 감싸져 올 수 있음
+      const result = (rawResult as { data?: Record<string, unknown> }).data || rawResult;
+
+      // "전체 결과" 출력에서 마크다운 코드 블록(```json ... ```) 제거
+      const outputs = (result as { outputs?: Record<string, unknown> }).outputs;
+      if (outputs && typeof outputs["전체 결과"] === "string") {
+        let text = outputs["전체 결과"] as string;
+        // ```json ... ``` 또는 ``` ... ``` 패턴 제거
+        text = text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "");
+        outputs["전체 결과"] = text;
+      }
+
       res.json(result);
     } catch (error) {
       console.error("Workflow execution failed:", error);

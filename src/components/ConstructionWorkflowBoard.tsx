@@ -218,16 +218,27 @@ function JsonTreeViewer({ data, depth = 0 }: { data: unknown; depth?: number }) 
   return <span>{String(data)}</span>;
 }
 
+function stripMarkdownCodeBlock(text: string): string {
+  // ```json ... ``` 또는 ``` ... ``` 패턴 제거
+  return text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "");
+}
+
 function ResultCards({ result }: { result: WorkflowResult }) {
   const outputText = result.outputs?.["전체 결과"] || "";
 
-  // Try parsing the output as JSON
+  // Try parsing the output as JSON (strip markdown code blocks first)
   const parsedOutput = useMemo(() => {
     if (!outputText) return null;
+    const cleaned = stripMarkdownCodeBlock(outputText);
     try {
-      return JSON.parse(outputText);
+      return JSON.parse(cleaned);
     } catch {
-      return null;
+      // 원본도 시도
+      try {
+        return JSON.parse(outputText);
+      } catch {
+        return null;
+      }
     }
   }, [outputText]);
 
