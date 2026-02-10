@@ -1,6 +1,13 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+import path from "path";
+
+// .env 파일을 프로젝트 루트에서 명시적으로 로드
+dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+
 // 회사 프록시/방화벽 SSL 인증서 문제 우회 (개발 환경용)
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = process.env.NODE_TLS_REJECT_UNAUTHORIZED || "1";
+
+console.log("[ENV] MISO_API_KEY:", process.env.MISO_API_KEY ? "설정됨" : "미설정");
 import express from "express";
 import { fetchAllFeeds } from "./feeds";
 import workflowRouter from "./workflow";

@@ -6,11 +6,13 @@ import fs from "fs";
 const router = Router();
 
 const MISO_API_BASE = "https://api.holdings.miso.gs/ext/v1";
+const DEFAULT_API_KEY = "app-5N9l70h4wfnDrVccLDM3952R";
 
 function getApiKey(): string {
-  const key = process.env.MISO_API_KEY;
+  const key = process.env.MISO_API_KEY?.trim();
   if (!key) {
-    throw new Error("MISO_API_KEY 환경변수가 설정되지 않았습니다.");
+    console.log("[WORKFLOW] .env에서 MISO_API_KEY를 찾지 못해 기본 키를 사용합니다.");
+    return DEFAULT_API_KEY;
   }
   return key;
 }
