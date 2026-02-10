@@ -1,4 +1,6 @@
 import "dotenv/config";
+// 회사 프록시/방화벽 SSL 인증서 문제 우회 (개발 환경용)
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = process.env.NODE_TLS_REJECT_UNAUTHORIZED || "1";
 import express from "express";
 import { fetchAllFeeds } from "./feeds";
 import workflowRouter from "./workflow";
