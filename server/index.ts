@@ -1,8 +1,12 @@
+import "dotenv/config";
 import express from "express";
 import { fetchAllFeeds } from "./feeds";
+import workflowRouter from "./workflow";
 
 const app = express();
 const PORT = 3001;
+
+app.use(express.json());
 
 // In-memory cache
 let cachedNews: Awaited<ReturnType<typeof fetchAllFeeds>> = [];
@@ -38,6 +42,9 @@ app.get("/api/news/refresh", async (_req, res) => {
     res.status(500).json({ error: "Failed to refresh news" });
   }
 });
+
+// Workflow routes
+app.use("/api/workflow", workflowRouter);
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
