@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { SceneAnalysis, DetectedObject, ViewMode } from './types';
+import { SceneAnalysis, ViewMode } from './types';
 
 interface Props {
   scene: SceneAnalysis;
@@ -10,6 +10,8 @@ interface Props {
   viewMode: ViewMode;
   activeVP: number | null;
 }
+
+const ROOM_W = 8, ROOM_D = 10, WALL_H = 2.2;
 
 function lerp3(cam: THREE.PerspectiveCamera, ctrl: OrbitControls, toP: THREE.Vector3, toL: THREE.Vector3, ms = 800) {
   const fP = cam.position.clone(), fL = ctrl.target.clone(), t0 = Date.now();
@@ -32,11 +34,11 @@ function label(text: string, color: string, s = 1): THREE.Sprite {
   if (typeof ctx.roundRect === 'function') ctx.roundRect(0, 0, 512, 128, 14);
   else { ctx.moveTo(14, 0); ctx.lineTo(498, 0); ctx.arcTo(512, 0, 512, 14, 14); ctx.lineTo(512, 114); ctx.arcTo(512, 128, 498, 128, 14); ctx.lineTo(14, 128); ctx.arcTo(0, 128, 0, 114, 14); ctx.lineTo(0, 14); ctx.arcTo(0, 0, 14, 0, 14); ctx.closePath(); }
   ctx.fill();
-  ctx.fillStyle = '#fff'; ctx.font = 'bold 38px sans-serif';
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 36px sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(text, 256, 64);
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthTest: false }));
-  sp.scale.set(2 * s, 0.5 * s, 1);
+  sp.scale.set(1.8 * s, 0.45 * s, 1);
   return sp;
 }
 
@@ -50,7 +52,6 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     hotspots: THREE.Mesh[];
     animId: number;
   } | null>(null);
-
   const selRef = useRef(onSelect);
   selRef.current = onSelect;
 
@@ -62,9 +63,9 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x050910);
 
-    // Start in dollhouse view — looking down at the room model
+    // Dollhouse view: looking down at the room
     const camera = new THREE.PerspectiveCamera(50, w / h, 0.05, 200);
-    camera.position.set(6, 12, 8);
+    camera.position.set(5, 10, 7);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(w, h);
@@ -75,67 +76,88 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.target.set(0, 1, 0);
-    controls.maxDistance = 60;
+    controls.target.set(0, 0.5, 0);
+    controls.maxDistance = 40;
     controls.minDistance = 0.3;
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.8));
     const dl = new THREE.DirectionalLight(0xffffff, 0.5);
     dl.position.set(5, 10, 5);
     scene.add(dl);
 
-    // Subtle ground grid at floor level
-    const grid = new THREE.GridHelper(20, 20, 0x0e1425, 0x0e1425);
-    grid.position.y = -0.01;
-    scene.add(grid);
+    // === TEXTURED FLOOR (the key visual element) ===
+    const floorTexUrl = (data.viewpoints as any).__floorTextureUrl;
+    if (floorTexUrl) {
+      const floorGeo = new THREE.PlaneGeometry(ROOM_W, ROOM_D);
+      const floorTex = new THREE.TextureLoader().load(floorTexUrl);
+      floorTex.colorSpace = THREE.SRGBColorSpace;
+      const floorMat = new THREE.MeshBasicMaterial({ map: floorTex, side: THREE.DoubleSide });
+      const floor = new THREE.Mesh(floorGeo, floorMat);
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.set(0, 0.01, 0);
+      scene.add(floor);
+    }
 
-    // === UNIFIED POINT CLOUD — dense, solid appearance ===
+    // === TEXTURED WALLS (photo panels around the room) ===
+    const wallSegments = (data.viewpoints as any).__wallSegments as
+      { angle: number; imageUrl: string; width: number; height: number }[] | undefined;
+
+    if (wallSegments) {
+      const numWalls = wallSegments.length;
+      const circumference = 2 * (ROOM_W + ROOM_D);
+      const wallWidth = circumference / numWalls;
+
+      wallSegments.forEach((seg) => {
+        const wallGeo = new THREE.PlaneGeometry(wallWidth * 0.95, WALL_H);
+        const wallTex = new THREE.TextureLoader().load(seg.imageUrl);
+        wallTex.colorSpace = THREE.SRGBColorSpace;
+        const wallMat = new THREE.MeshBasicMaterial({
+          map: wallTex, side: THREE.DoubleSide,
+          transparent: true, opacity: 0.9,
+        });
+        const wall = new THREE.Mesh(wallGeo, wallMat);
+
+        // Position wall at room boundary
+        const radius = Math.min(ROOM_W, ROOM_D) / 2 * 0.95;
+        const x = Math.sin(seg.angle) * radius;
+        const z = Math.cos(seg.angle) * radius;
+        wall.position.set(x, WALL_H / 2, z);
+        wall.lookAt(0, WALL_H / 2, 0); // Face inward
+        scene.add(wall);
+      });
+    }
+
+    // === POINT CLOUD (sparse, for depth/3D effect) ===
     const { positions, colors, count } = data.pointCloud;
     if (count > 0) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
       scene.add(new THREE.Points(geo, new THREE.PointsMaterial({
-        size: 0.035,  // Smaller but denser → solid look
+        size: 0.08,
         vertexColors: true,
         sizeAttenuation: true,
-        transparent: false,
+        transparent: true,
+        opacity: 0.7,
       })));
     }
 
-    // === FLOOR HOTSPOTS (navigation) ===
+    // === FLOOR HOTSPOTS ===
     const hotspots: THREE.Mesh[] = [];
     const hsGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.03, 24);
-    const ringGeo = new THREE.RingGeometry(0.2, 0.3, 32);
-
     data.waypoints.forEach((wp, i) => {
       const disc = new THREE.Mesh(hsGeo, new THREE.MeshPhongMaterial({
         color: 0x6366f1, emissive: 0x6366f1, emissiveIntensity: 0.7,
         transparent: true, opacity: 0.85,
       }));
-      disc.position.set(wp.position.x, 0.05, wp.position.z);
+      // Spread hotspots around the center (not all at 0,0)
+      const angle = (i / data.waypoints.length) * Math.PI * 2;
+      const r = 1.2;
+      disc.position.set(Math.sin(angle) * r, 0.05, Math.cos(angle) * r);
       disc.userData = { type: 'hotspot', vpIndex: i };
       scene.add(disc);
       hotspots.push(disc);
-
-      const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
-        color: 0x6366f1, side: THREE.DoubleSide, transparent: true, opacity: 0.2,
-      }));
-      ring.position.set(wp.position.x, 0.06, wp.position.z);
-      ring.rotation.x = -Math.PI / 2;
-      scene.add(ring);
     });
-
-    // Camera path line on floor
-    if (data.waypoints.length >= 2) {
-      const pts = data.waypoints.map((wp) => new THREE.Vector3(wp.position.x, 0.05, wp.position.z));
-      const line = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(pts.length > 2 ? new THREE.CatmullRomCurve3(pts).getPoints(50) : pts),
-        new THREE.LineDashedMaterial({ color: 0x6366f1, dashSize: 0.15, gapSize: 0.1, transparent: true, opacity: 0.2 })
-      );
-      line.computeLineDistances();
-      scene.add(line);
-    }
 
     // === DETECTED OBJECTS ===
     const objMeshes = new Map<string, THREE.Mesh>();
@@ -147,35 +169,27 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
       );
       const geo = new THREE.BoxGeometry(sz, sz, sz);
       const mat = new THREE.MeshPhongMaterial({
-        color: obj.color, transparent: true, opacity: 0.45,
+        color: obj.color, transparent: true, opacity: 0.5,
         emissive: obj.color, emissiveIntensity: 0.35,
       });
       const m = new THREE.Mesh(geo, mat);
-      m.position.set(obj.position3D.x, obj.position3D.y, obj.position3D.z);
+      m.position.set(obj.position3D.x, obj.position3D.y + sz / 2, obj.position3D.z);
       m.userData = { objectId: obj.id };
       m.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: obj.color, transparent: true, opacity: 0.6 })));
       scene.add(m);
       objMeshes.set(obj.id, m);
 
       const lb = label(`${obj.label} ${Math.round(obj.score * 100)}%`, obj.color, 0.55);
-      lb.position.set(obj.position3D.x, obj.position3D.y + sz / 2 + 0.25, obj.position3D.z);
+      lb.position.set(obj.position3D.x, obj.position3D.y + sz + 0.3, obj.position3D.z);
       scene.add(lb);
     });
 
-    // Trajectories
-    const groups = new Map<string, DetectedObject[]>();
-    data.allObjects.forEach((o) => { const g = groups.get(o.label) || []; g.push(o); groups.set(o.label, g); });
-    groups.forEach((objs) => {
-      if (objs.length < 2) return;
-      const sorted = [...objs].sort((a, b) => a.viewpointIndex - b.viewpointIndex);
-      const pts = sorted.map((o) => new THREE.Vector3(o.position3D.x, o.position3D.y, o.position3D.z));
-      if (pts.length >= 2) {
-        scene.add(new THREE.Line(
-          new THREE.BufferGeometry().setFromPoints(pts.length > 2 ? new THREE.CatmullRomCurve3(pts).getPoints(pts.length * 8) : pts),
-          new THREE.LineBasicMaterial({ color: sorted[0].color, transparent: true, opacity: 0.3 })
-        ));
-      }
-    });
+    // Room outline (subtle box edges)
+    const boxGeo = new THREE.BoxGeometry(ROOM_W, WALL_H, ROOM_D);
+    const boxEdges = new THREE.EdgesGeometry(boxGeo);
+    const boxLine = new THREE.LineSegments(boxEdges, new THREE.LineBasicMaterial({ color: 0x2a2a4a, transparent: true, opacity: 0.3 }));
+    boxLine.position.set(0, WALL_H / 2, 0);
+    scene.add(boxLine);
 
     // Raycaster
     const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
@@ -193,8 +207,7 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
           const wp = data.waypoints[ud.vpIndex];
           lerp3(camera, controls,
             new THREE.Vector3(wp.position.x, wp.position.y, wp.position.z),
-            new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z)
-          );
+            new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z));
         }
       } else selRef.current(null);
     };
@@ -211,7 +224,6 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
 
     stateRef.current = { camera, controls, renderer, objMeshes, hotspots, animId: 0 };
 
-    // Animation
     const animate = () => {
       const id = requestAnimationFrame(animate);
       if (stateRef.current) stateRef.current.animId = id;
@@ -253,18 +265,17 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
         break;
       }
       case 'orbit':
-        lerp3(camera, controls, new THREE.Vector3(7, 6, 9), new THREE.Vector3(0, 1, 0));
+        lerp3(camera, controls, new THREE.Vector3(6, 5, 8), new THREE.Vector3(0, 0.5, 0));
         break;
       case 'dollhouse':
-        lerp3(camera, controls, new THREE.Vector3(3, 12, 6), new THREE.Vector3(0, 1, 0));
+        lerp3(camera, controls, new THREE.Vector3(3, 10, 5), new THREE.Vector3(0, 0.5, 0));
         break;
       case 'floorplan':
-        lerp3(camera, controls, new THREE.Vector3(0, 20, 0.1), new THREE.Vector3(0, 0, 0));
+        lerp3(camera, controls, new THREE.Vector3(0, 18, 0.1), new THREE.Vector3(0, 0, 0));
         break;
     }
   }, [viewMode, data.waypoints, activeVP]);
 
-  // Active viewpoint
   useEffect(() => {
     if (!stateRef.current || activeVP === null || viewMode !== 'walkthrough') return;
     const wp = data.waypoints[activeVP];
@@ -274,20 +285,19 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
       new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z), 600);
   }, [activeVP, viewMode, data.waypoints]);
 
-  // Selection
   useEffect(() => {
     if (!stateRef.current) return;
     stateRef.current.objMeshes.forEach((m, id) => {
       const mat = m.material as THREE.MeshPhongMaterial;
       const sel = id === selectedId;
       mat.emissiveIntensity = sel ? 1.0 : 0.35;
-      mat.opacity = sel ? 0.8 : 0.45;
+      mat.opacity = sel ? 0.8 : 0.5;
       m.scale.setScalar(sel ? 1.4 : 1);
     });
     if (selectedId) {
       const m = stateRef.current.objMeshes.get(selectedId);
       if (m) lerp3(stateRef.current.camera, stateRef.current.controls,
-        new THREE.Vector3(m.position.x + 1.5, m.position.y + 0.8, m.position.z + 2), m.position.clone(), 600);
+        new THREE.Vector3(m.position.x + 1.5, m.position.y + 1, m.position.z + 2), m.position.clone(), 600);
     }
   }, [selectedId]);
 
