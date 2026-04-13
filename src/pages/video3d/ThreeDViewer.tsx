@@ -11,9 +11,7 @@ interface Props {
   activeVP: number | null;
 }
 
-const ROOM_R = 4;    // cylinder radius
-const WALL_H = 2.8;  // wall height
-const FLOOR_R = 4.5;  // floor radius
+const SPHERE_R = 5;
 
 function lerp3(cam: THREE.PerspectiveCamera, ctrl: OrbitControls, toP: THREE.Vector3, toL: THREE.Vector3, ms = 800) {
   const fP = cam.position.clone(), fL = ctrl.target.clone(), t0 = Date.now();
@@ -28,7 +26,7 @@ function lerp3(cam: THREE.PerspectiveCamera, ctrl: OrbitControls, toP: THREE.Vec
   tick();
 }
 
-function label(text: string, color: string, s = 1): THREE.Sprite {
+function makeLabel(text: string, color: string, s = 1): THREE.Sprite {
   const c = document.createElement('canvas'), ctx = c.getContext('2d')!;
   c.width = 512; c.height = 128;
   ctx.fillStyle = color;
@@ -51,6 +49,8 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     controls: OrbitControls;
     renderer: THREE.WebGLRenderer;
     objMeshes: Map<string, THREE.Mesh>;
+    sphere: THREE.Mesh;
+    clipPlane: THREE.Plane;
     hotspots: THREE.Mesh[];
     animId: number;
   } | null>(null);
@@ -65,90 +65,75 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x050910);
 
-    const camera = new THREE.PerspectiveCamera(50, w / h, 0.05, 200);
-    camera.position.set(4, 6, 6);
+    const camera = new THREE.PerspectiveCamera(60, w / h, 0.05, 200);
+    // Start inside the sphere (walkthrough)
+    camera.position.set(0, 1.5, 0.1);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(w, h);
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.localClippingEnabled = true;
     el.appendChild(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.target.set(0, 0.8, 0);
-    controls.maxDistance = 30;
-    controls.minDistance = 0.2;
+    controls.dampingFactor = 0.06;
+    controls.target.set(0, 1.2, -1);
+    controls.maxDistance = 25;
+    controls.minDistance = 0.1;
+    controls.rotateSpeed = 0.5; // Slower rotation inside sphere
 
     scene.add(new THREE.AmbientLight(0xffffff, 1.0));
 
-    // === PANORAMA CYLINDER (the connected room wall) ===
-    const panoramaUrl = (data.viewpoints as any).__panoramaUrl;
-    if (panoramaUrl) {
-      // Open-ended cylinder, textured on INSIDE
-      const cylGeo = new THREE.CylinderGeometry(ROOM_R, ROOM_R, WALL_H, 64, 1, true);
-      const cylTex = new THREE.TextureLoader().load(panoramaUrl);
-      cylTex.colorSpace = THREE.SRGBColorSpace;
-      cylTex.wrapS = THREE.RepeatWrapping;
+    // Clipping plane: used in dollhouse mode to cut top half of sphere
+    const clipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 3.5);
 
-      const cylMat = new THREE.MeshBasicMaterial({
-        map: cylTex,
-        side: THREE.BackSide, // Render on inside
+    // === PANORAMIC SPHERE ===
+    const panoUrl = (data.viewpoints as any).__panoUrl;
+    const sphereGeo = new THREE.SphereGeometry(SPHERE_R, 64, 48);
+    let sphere: THREE.Mesh;
+
+    if (panoUrl) {
+      const tex = new THREE.TextureLoader().load(panoUrl);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      // Flip the texture for inside viewing
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.repeat.x = -1;
+
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex,
+        side: THREE.BackSide,
+        clippingPlanes: [], // Will be set in dollhouse mode
       });
-      const cylinder = new THREE.Mesh(cylGeo, cylMat);
-      cylinder.position.y = WALL_H / 2;
-      scene.add(cylinder);
+      sphere = new THREE.Mesh(sphereGeo, mat);
+      sphere.position.set(0, SPHERE_R * 0.3, 0); // Offset so "eye level" is natural
+      scene.add(sphere);
 
-      // Also show a faint outer shell for dollhouse visibility
+      // Outer view for dollhouse (slightly visible from outside)
       const outerMat = new THREE.MeshBasicMaterial({
-        map: cylTex,
+        map: tex,
         side: THREE.FrontSide,
         transparent: true,
-        opacity: 0.6,
+        opacity: 0.5,
+        clippingPlanes: [clipPlane], // Cut top half
       });
-      const outerCyl = new THREE.Mesh(cylGeo.clone(), outerMat);
-      outerCyl.position.y = WALL_H / 2;
-      scene.add(outerCyl);
+      const outer = new THREE.Mesh(sphereGeo.clone(), outerMat);
+      outer.position.copy(sphere.position);
+      scene.add(outer);
+    } else {
+      sphere = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color: 0x333 }));
     }
 
-    // === TEXTURED FLOOR ===
-    const floorUrl = (data.viewpoints as any).__floorUrl;
-    if (floorUrl) {
-      const floorGeo = new THREE.CircleGeometry(FLOOR_R, 64);
-      const floorTex = new THREE.TextureLoader().load(floorUrl);
-      floorTex.colorSpace = THREE.SRGBColorSpace;
-      const floorMat = new THREE.MeshBasicMaterial({ map: floorTex, side: THREE.DoubleSide });
-      const floor = new THREE.Mesh(floorGeo, floorMat);
-      floor.rotation.x = -Math.PI / 2;
-      floor.position.y = 0.01;
-      scene.add(floor);
-    }
-
-    // Subtle grid
-    const grid = new THREE.GridHelper(20, 20, 0x0e1425, 0x0e1425);
-    grid.position.y = 0;
-    scene.add(grid);
-
-    // Room edge ring at top of walls
-    const ringGeo = new THREE.RingGeometry(ROOM_R - 0.02, ROOM_R + 0.02, 64);
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0x2a2a4a, side: THREE.DoubleSide });
-    const topRing = new THREE.Mesh(ringGeo, ringMat);
-    topRing.rotation.x = -Math.PI / 2;
-    topRing.position.y = WALL_H;
-    scene.add(topRing);
-
-    // === HOTSPOTS ===
+    // === FLOOR HOTSPOTS ===
     const hotspots: THREE.Mesh[] = [];
-    const hsGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.02, 24);
+    const hsGeo = new THREE.CylinderGeometry(0.1, 0.1, 0.015, 20);
     data.waypoints.forEach((wp, i) => {
       const angle = (i / data.waypoints.length) * Math.PI * 2;
-      const r = 1.0;
-      const disc = new THREE.Mesh(hsGeo, new THREE.MeshPhongMaterial({
-        color: 0x6366f1, emissive: 0x6366f1, emissiveIntensity: 0.7,
-        transparent: true, opacity: 0.85,
+      const disc = new THREE.Mesh(hsGeo, new THREE.MeshBasicMaterial({
+        color: 0x6366f1, transparent: true, opacity: 0.9,
       }));
-      disc.position.set(Math.sin(angle) * r, 0.04, Math.cos(angle) * r);
+      disc.position.set(Math.sin(angle) * 0.8, 0.02, Math.cos(angle) * 0.8);
       disc.userData = { type: 'hotspot', vpIndex: i };
       scene.add(disc);
       hotspots.push(disc);
@@ -157,8 +142,7 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     // === DETECTED OBJECTS ===
     const objMeshes = new Map<string, THREE.Mesh>();
     data.allObjects.forEach((obj) => {
-      const sz = Math.max(0.15, Math.min(0.5,
-        (obj.bbox[2] / data.imageWidth) * 2));
+      const sz = Math.max(0.12, Math.min(0.4, (obj.bbox[2] / data.imageWidth) * 2));
       const geo = new THREE.BoxGeometry(sz, sz, sz);
       const mat = new THREE.MeshPhongMaterial({
         color: obj.color, transparent: true, opacity: 0.55,
@@ -172,8 +156,8 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
       scene.add(m);
       objMeshes.set(obj.id, m);
 
-      const lb = label(`${obj.label} ${Math.round(obj.score * 100)}%`, obj.color, 0.5);
-      lb.position.set(obj.position3D.x, obj.position3D.y + sz / 2 + 0.2, obj.position3D.z);
+      const lb = makeLabel(`${obj.label} ${Math.round(obj.score * 100)}%`, obj.color, 0.45);
+      lb.position.set(obj.position3D.x, obj.position3D.y + sz / 2 + 0.15, obj.position3D.z);
       scene.add(lb);
     });
 
@@ -192,13 +176,12 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
         else if (ud.type === 'hotspot') {
           const wp = data.waypoints[ud.vpIndex];
           lerp3(camera, controls,
-            new THREE.Vector3(wp.position.x, wp.position.y, wp.position.z),
+            new THREE.Vector3(0, wp.position.y, 0),
             new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z));
         }
       } else selRef.current(null);
     };
     renderer.domElement.addEventListener('click', onClick);
-    renderer.domElement.style.cursor = 'grab';
 
     const onMove = (e: MouseEvent) => {
       const r = renderer.domElement.getBoundingClientRect();
@@ -208,14 +191,17 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     };
     renderer.domElement.addEventListener('mousemove', onMove);
 
-    stateRef.current = { camera, controls, renderer, objMeshes, hotspots, animId: 0 };
+    stateRef.current = { camera, controls, renderer, objMeshes, sphere, clipPlane, hotspots, animId: 0 };
 
     const animate = () => {
       const id = requestAnimationFrame(animate);
       if (stateRef.current) stateRef.current.animId = id;
       controls.update();
       const t = Date.now() * 0.001;
-      hotspots.forEach((hs, i) => { hs.scale.set(1 + Math.sin(t * 2 + i) * 0.15, 1, 1 + Math.sin(t * 2 + i) * 0.15); });
+      hotspots.forEach((hs, i) => {
+        const s = 1 + Math.sin(t * 2 + i) * 0.2;
+        hs.scale.set(s, 1, s);
+      });
       renderer.render(scene, camera);
     };
     stateRef.current.animId = requestAnimationFrame(animate);
@@ -238,39 +224,56 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     };
   }, [data]);
 
-  // View mode
+  // View mode switching
   useEffect(() => {
     if (!stateRef.current) return;
-    const { camera, controls } = stateRef.current;
+    const { camera, controls, sphere } = stateRef.current;
+    const mat = sphere.material as THREE.MeshBasicMaterial;
+
     switch (viewMode) {
       case 'walkthrough': {
+        // Inside the sphere
+        controls.rotateSpeed = 0.5;
+        controls.minDistance = 0.1;
+        mat.clippingPlanes = [];
         const wp = data.waypoints[activeVP ?? 0];
         lerp3(camera, controls,
-          new THREE.Vector3(wp.position.x, wp.position.y, wp.position.z),
+          new THREE.Vector3(0, 1.5, 0.1),
           new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z));
         break;
       }
       case 'orbit':
-        lerp3(camera, controls, new THREE.Vector3(5, 4, 6), new THREE.Vector3(0, 0.8, 0));
+        controls.rotateSpeed = 1;
+        controls.minDistance = 2;
+        mat.clippingPlanes = [];
+        lerp3(camera, controls, new THREE.Vector3(5, 4, 6), new THREE.Vector3(0, 1, 0));
         break;
       case 'dollhouse':
-        lerp3(camera, controls, new THREE.Vector3(2, 8, 4), new THREE.Vector3(0, 0.5, 0));
+        controls.rotateSpeed = 1;
+        controls.minDistance = 3;
+        mat.clippingPlanes = [stateRef.current.clipPlane]; // Cut top half
+        lerp3(camera, controls, new THREE.Vector3(3, 8, 4), new THREE.Vector3(0, 0, 0));
         break;
       case 'floorplan':
-        lerp3(camera, controls, new THREE.Vector3(0, 15, 0.1), new THREE.Vector3(0, 0, 0));
+        controls.rotateSpeed = 1;
+        controls.minDistance = 5;
+        mat.clippingPlanes = [stateRef.current.clipPlane];
+        lerp3(camera, controls, new THREE.Vector3(0, 14, 0.1), new THREE.Vector3(0, 0, 0));
         break;
     }
   }, [viewMode, data.waypoints, activeVP]);
 
+  // Active viewpoint navigation (walkthrough)
   useEffect(() => {
     if (!stateRef.current || activeVP === null || viewMode !== 'walkthrough') return;
     const wp = data.waypoints[activeVP];
     if (!wp) return;
     lerp3(stateRef.current.camera, stateRef.current.controls,
-      new THREE.Vector3(wp.position.x, wp.position.y, wp.position.z),
+      new THREE.Vector3(0, 1.5, 0.1),
       new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z), 600);
   }, [activeVP, viewMode, data.waypoints]);
 
+  // Selection
   useEffect(() => {
     if (!stateRef.current) return;
     stateRef.current.objMeshes.forEach((m, id) => {
@@ -283,14 +286,15 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     if (selectedId) {
       const m = stateRef.current.objMeshes.get(selectedId);
       if (m) lerp3(stateRef.current.camera, stateRef.current.controls,
-        new THREE.Vector3(m.position.x * 0.5, m.position.y + 0.5, m.position.z * 0.5 + 1), m.position.clone(), 600);
+        new THREE.Vector3(m.position.x * 0.3, m.position.y, m.position.z * 0.3),
+        m.position.clone(), 600);
     }
   }, [selectedId]);
 
   return (
     <div className="v3d-viewer" ref={boxRef}>
       <div className="v3d-hints">
-        <span>드래그: 회전</span>
+        <span>드래그: 둘러보기</span>
         <span>스크롤: 줌</span>
         <span>바닥 원: 뷰 전환</span>
         <span>큐브: 객체</span>

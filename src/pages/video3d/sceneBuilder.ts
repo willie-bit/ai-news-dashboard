@@ -1,6 +1,6 @@
 import * as tf from '@tensorflow/tfjs';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
-import { DetectedObject, ViewpointData, SceneAnalysis, UnifiedPointCloud, Waypoint } from './types';
+import { DetectedObject, ViewpointData, SceneAnalysis, Waypoint } from './types';
 
 let model: cocoSsd.ObjectDetection | null = null;
 
@@ -21,105 +21,177 @@ async function loadModel(onProgress?: (msg: string) => void) {
   return model;
 }
 
+// ─── Photo Analysis ───────────────────────────────────────────
+
 /**
- * Stitch all photos into one seamless panorama with edge blending.
- * Each photo overlaps ~25% with its neighbor, alpha feathering in overlap zone.
+ * Compare a vertical strip of photo A (right edge) with photo B (left edge).
+ * Returns similarity score 0~1. Higher = more similar = more overlap.
  */
-function stitchPanorama(images: { data: ImageData }[]): HTMLCanvasElement {
-  const imgW = images[0].data.width;
-  const imgH = images[0].data.height;
-  const overlapFrac = 0.25;
-  const overlapPx = Math.floor(imgW * overlapFrac);
-  const step = imgW - overlapPx;
-  const totalW = step * images.length + overlapPx; // wraps around
+function edgeSimilarity(a: ImageData, b: ImageData): number {
+  const stripFrac = 0.12;
+  const sampleStep = 4; // sample every 4th pixel for speed
+  const wA = a.width, hA = a.height;
+  const wB = b.width, hB = b.height;
+  const stripA = Math.floor(wA * stripFrac);
+  const stripB = Math.floor(wB * stripFrac);
+  const h = Math.min(hA, hB);
 
-  const canvas = document.createElement('canvas');
-  canvas.width = totalW;
-  canvas.height = imgH;
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#111';
-  ctx.fillRect(0, 0, totalW, imgH);
+  let totalDiff = 0;
+  let count = 0;
 
-  images.forEach((img, i) => {
-    const tmp = document.createElement('canvas');
-    tmp.width = imgW;
-    tmp.height = imgH;
-    const tc = tmp.getContext('2d')!;
-    tc.putImageData(img.data, 0, 0);
+  for (let y = 0; y < h; y += sampleStep) {
+    for (let dx = 0; dx < Math.min(stripA, stripB); dx += sampleStep) {
+      const xA = wA - stripA + dx;
+      const xB = dx;
+      const iA = (y * wA + xA) * 4;
+      const iB = (y * wB + xB) * 4;
 
-    // Create alpha-masked version with feathered edges
-    const masked = document.createElement('canvas');
-    masked.width = imgW;
-    masked.height = imgH;
-    const mc = masked.getContext('2d')!;
+      const dr = a.data[iA] - b.data[iB];
+      const dg = a.data[iA + 1] - b.data[iB + 1];
+      const db = a.data[iA + 2] - b.data[iB + 2];
+      totalDiff += Math.sqrt(dr * dr + dg * dg + db * db);
+      count++;
+    }
+  }
 
-    // Gradient mask: fade in left edge, fade out right edge
-    const grad = mc.createLinearGradient(0, 0, imgW, 0);
-    const fadeIn = i > 0 ? overlapFrac : 0;
-    const fadeOut = i < images.length - 1 ? 1 - overlapFrac : 1;
-
-    grad.addColorStop(0, i > 0 ? 'rgba(255,255,255,0)' : 'rgba(255,255,255,1)');
-    if (fadeIn > 0) grad.addColorStop(fadeIn, 'rgba(255,255,255,1)');
-    if (fadeOut < 1) grad.addColorStop(fadeOut, 'rgba(255,255,255,1)');
-    grad.addColorStop(1, i < images.length - 1 ? 'rgba(255,255,255,0)' : 'rgba(255,255,255,1)');
-
-    mc.fillStyle = grad;
-    mc.fillRect(0, 0, imgW, imgH);
-    mc.globalCompositeOperation = 'source-in';
-    mc.drawImage(tmp, 0, 0);
-
-    ctx.drawImage(masked, i * step, 0);
-  });
-
-  return canvas;
+  // Normalize: 0 = identical, 441 = max diff (sqrt(255²*3))
+  const avgDiff = count > 0 ? totalDiff / count : 441;
+  return Math.max(0, 1 - avgDiff / 200); // 0~1
 }
 
 /**
- * Build floor texture from the bottom portions of all photos,
- * arranged as a radial panoramic composite.
+ * Find the best circular ordering of photos by maximizing
+ * edge similarity between consecutive pairs (greedy).
  */
-function buildFloorTexture(images: { data: ImageData }[]): HTMLCanvasElement {
-  const size = 2048;
-  const c = document.createElement('canvas');
-  c.width = size;
-  c.height = size;
-  const ctx = c.getContext('2d')!;
-  ctx.fillStyle = '#1a1a2e';
-  ctx.fillRect(0, 0, size, size);
-
+function findBestOrder(images: ImageData[]): number[] {
   const n = images.length;
-  const angleStep = (Math.PI * 2) / n;
+  if (n <= 2) return images.map((_, i) => i);
 
-  images.forEach((img, i) => {
-    const { width, height, data } = img.data;
+  // Compute pairwise similarity (right edge of i → left edge of j)
+  const sim: number[][] = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      if (i !== j) sim[i][j] = edgeSimilarity(images[i], images[j]);
+    }
+  }
+
+  // Greedy: start from 0, always pick the most similar next
+  const used = new Set([0]);
+  const order = [0];
+  for (let step = 1; step < n; step++) {
+    const last = order[order.length - 1];
+    let bestJ = -1, bestS = -1;
+    for (let j = 0; j < n; j++) {
+      if (!used.has(j) && sim[last][j] > bestS) {
+        bestS = sim[last][j];
+        bestJ = j;
+      }
+    }
+    order.push(bestJ);
+    used.add(bestJ);
+  }
+  return order;
+}
+
+/**
+ * Compute per-pair overlap ratio based on edge similarity.
+ * Higher similarity → more overlap for smoother blending.
+ */
+function computeOverlaps(images: ImageData[], order: number[]): number[] {
+  const overlaps: number[] = [];
+  for (let i = 0; i < order.length; i++) {
+    const next = (i + 1) % order.length;
+    const sim = edgeSimilarity(images[order[i]], images[order[next]]);
+    // More similar = more overlap (0.15 ~ 0.40)
+    overlaps.push(0.15 + sim * 0.25);
+  }
+  return overlaps;
+}
+
+// ─── Panorama Construction ────────────────────────────────────
+
+/**
+ * Stitch photos into an equirectangular panorama (2:1 ratio).
+ * Covers full 360° horizontally and ~150° vertically (walls + floor + partial ceiling).
+ * Uses adaptive overlap and multi-pass alpha blending.
+ */
+function buildEquirectangular(
+  images: { data: ImageData }[],
+  order: number[],
+  overlaps: number[]
+): HTMLCanvasElement {
+  const panoW = 4096;
+  const panoH = 2048;
+  const c = document.createElement('canvas');
+  c.width = panoW;
+  c.height = panoH;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, panoW, panoH);
+
+  const n = order.length;
+  // Calculate horizontal positions with variable overlap
+  const totalWeight = overlaps.reduce((s, o) => s + (1 - o), 0);
+  let xPos = 0;
+
+  for (let idx = 0; idx < n; idx++) {
+    const imgIdx = order[idx];
+    const img = images[imgIdx].data;
+    const overlap = overlaps[idx];
+    const sliceW = ((1 - overlap) / totalWeight) * panoW;
+
+    // Create temp canvas for this photo
     const tmp = document.createElement('canvas');
-    tmp.width = width;
-    tmp.height = height;
-    tmp.getContext('2d')!.putImageData(img.data, 0, 0);
+    tmp.width = img.width;
+    tmp.height = img.height;
+    tmp.getContext('2d')!.putImageData(img, 0, 0);
 
-    const angle = i * angleStep - Math.PI / 2;
-    const fan = size * 0.48;
+    // Create masked version with feathered edges
+    const masked = document.createElement('canvas');
+    const drawW = sliceW + sliceW * overlap * 2; // wider to include blend zones
+    masked.width = Math.ceil(drawW);
+    masked.height = panoH;
+    const mc = masked.getContext('2d')!;
 
-    ctx.save();
-    ctx.translate(size / 2, size / 2);
-    ctx.rotate(angle);
+    // Draw photo stretched to fill
+    mc.drawImage(tmp, 0, 0, masked.width, panoH);
 
-    // Clip to fan wedge
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    const half = angleStep * 0.55;
-    ctx.arc(0, 0, fan, -half, half);
-    ctx.closePath();
-    ctx.clip();
+    // Apply alpha gradient at edges
+    mc.globalCompositeOperation = 'destination-in';
+    const grad = mc.createLinearGradient(0, 0, masked.width, 0);
+    const fadeZone = overlap * 0.8;
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(Math.min(fadeZone, 0.3), 'rgba(255,255,255,1)');
+    grad.addColorStop(Math.max(1 - fadeZone, 0.7), 'rgba(255,255,255,1)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    mc.fillStyle = grad;
+    mc.fillRect(0, 0, masked.width, panoH);
 
-    // Draw bottom 60% of photo (floor area)
-    const cropY = Math.floor(height * 0.4);
-    ctx.drawImage(tmp, 0, cropY, width, height - cropY, -fan * 0.7, -fan * 0.5, fan * 1.4, fan);
-    ctx.restore();
-  });
+    // Also fade top/bottom for natural ceiling/floor transition
+    mc.globalCompositeOperation = 'destination-in';
+    const vGrad = mc.createLinearGradient(0, 0, 0, panoH);
+    vGrad.addColorStop(0, 'rgba(255,255,255,0.3)'); // slight ceiling
+    vGrad.addColorStop(0.15, 'rgba(255,255,255,1)');
+    vGrad.addColorStop(0.85, 'rgba(255,255,255,1)');
+    vGrad.addColorStop(1, 'rgba(255,255,255,0.5)'); // floor fades
+    mc.fillStyle = vGrad;
+    mc.fillRect(0, 0, masked.width, panoH);
+
+    // Draw onto panorama
+    const drawX = xPos - sliceW * overlap;
+    ctx.drawImage(masked, drawX, 0);
+
+    // Also wrap around for seamless 360°
+    if (drawX < 0) ctx.drawImage(masked, drawX + panoW, 0);
+    if (drawX + masked.width > panoW) ctx.drawImage(masked, drawX - panoW, 0);
+
+    xPos += sliceW;
+  }
 
   return c;
 }
+
+// ─── Main Build ───────────────────────────────────────────────
 
 export async function buildScene(
   images: { url: string; data: ImageData }[],
@@ -134,72 +206,77 @@ export async function buildScene(
     throw new Error(`AI 모델 로딩 실패: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Object detection
+  const n = images.length;
+
+  // Step 1: Analyze photo relationships
+  onProgress?.('사진 관계 분석 중...', 5);
+  const imageDataArr = images.map((i) => i.data);
+  const order = findBestOrder(imageDataArr);
+  const overlaps = computeOverlaps(imageDataArr, order);
+  const avgOverlap = overlaps.reduce((s, o) => s + o, 0) / overlaps.length;
+  onProgress?.(`사진 정렬 완료 (평균 겹침: ${Math.round(avgOverlap * 100)}%)`, 15);
+
+  // Step 2: Object detection
   const viewpoints: ViewpointData[] = [];
   const allObjects: DetectedObject[] = [];
   let objId = 0;
   const canvas = document.createElement('canvas');
-  const n = images.length;
-  const angleStep = (Math.PI * 2) / n;
 
-  for (let i = 0; i < n; i++) {
-    onProgress?.(`뷰포인트 ${i + 1}/${n} 객체 인식 중...`, 5 + (i / n) * 40);
+  for (let idx = 0; idx < n; idx++) {
+    const i = order[idx];
+    onProgress?.(`뷰포인트 ${idx + 1}/${n} 객체 인식 중...`, 15 + (idx / n) * 35);
+
     const { url, data: imgData } = images[i];
     canvas.width = imgData.width;
     canvas.height = imgData.height;
     canvas.getContext('2d')!.putImageData(imgData, 0, 0);
-
     const preds = await det.detect(canvas);
-    const angle = i * angleStep;
+
+    const angle = (idx / n) * Math.PI * 2;
     const radius = 3.5;
 
     const objects: DetectedObject[] = preds.filter((p) => p.score >= 0.35).map((p) => {
       const [bx, by, bw, bh] = p.bbox;
       const cx = (bx + bw / 2) / imgData.width;
       const cy = (by + bh / 2) / imgData.height;
-      // Position object in the room at the wall it's seen on
-      const objAngle = angle + (cx - 0.5) * 0.7;
-      const objR = radius * 0.9;
+      const objAngle = angle + (cx - 0.5) * (Math.PI * 2 / n);
+      const r = radius * (0.5 + cy * 0.5);
       return {
         id: `obj-${objId++}`, label: p.class, score: p.score,
         bbox: p.bbox as [number, number, number, number],
-        viewpointIndex: i, description: '',
+        viewpointIndex: idx, description: '',
         color: COLORS[p.class] || COLORS.default,
         position3D: {
-          x: Math.sin(objAngle) * objR,
-          y: (0.5 - cy) * 2.5 + 1,
-          z: Math.cos(objAngle) * objR,
+          x: Math.sin(objAngle) * r,
+          y: (0.5 - cy) * 3 + 1.5,
+          z: Math.cos(objAngle) * r,
         },
       };
     });
 
-    viewpoints.push({ index: i, imageUrl: url, imageData: imgData, objects });
+    viewpoints.push({ index: idx, imageUrl: url, imageData: imgData, objects });
     allObjects.push(...objects);
   }
 
-  // Stitch panorama
-  onProgress?.('파노라마 스티칭 중...', 55);
-  const panoramaCanvas = stitchPanorama(images);
-  const panoramaUrl = panoramaCanvas.toDataURL('image/jpeg', 0.85);
+  // Step 3: Build equirectangular panorama
+  onProgress?.('파노라마 구축 중 (스티칭 + 블렌딩)...', 55);
+  const panoCanvas = buildEquirectangular(images, order, overlaps);
+  const panoUrl = panoCanvas.toDataURL('image/jpeg', 0.9);
 
-  // Build floor
-  onProgress?.('바닥 텍스처 생성 중...', 70);
-  const floorCanvas = buildFloorTexture(images);
-  const floorUrl = floorCanvas.toDataURL('image/jpeg', 0.85);
-
-  // Waypoints
-  const waypoints: Waypoint[] = images.map((_, i) => {
-    const a = i * angleStep;
+  // Waypoints based on analyzed order
+  const waypoints: Waypoint[] = order.map((origIdx, idx) => {
+    const angle = (idx / n) * Math.PI * 2;
     return {
       position: { x: 0, y: 1.5, z: 0 },
-      lookAt: { x: Math.sin(a) * 5, y: 1.2, z: Math.cos(a) * 5 },
-      viewpointIndex: i,
+      lookAt: { x: Math.sin(angle) * 5, y: 1.2, z: Math.cos(angle) * 5 },
+      viewpointIndex: idx,
     };
   });
 
-  // Store texture URLs
-  (viewpoints as any).__panoramaUrl = panoramaUrl;
-  (viewpoints as any).__floorUrl = floorUrl;
+  // Store panorama URL
+  (viewpoints as any).__panoUrl = panoUrl;
+  (viewpoints as any).__order = order;
+  (viewpoints as any).__overlaps = overlaps;
 
   onProgress?.('완료!', 100);
 
