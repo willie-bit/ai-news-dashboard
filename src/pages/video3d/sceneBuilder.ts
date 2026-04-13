@@ -18,199 +18,107 @@ async function loadModel(onProgress?: (msg: string) => void) {
   await tf.ready();
   onProgress?.('AI 객체 인식 모델 로딩 중...');
   model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
-  onProgress?.('모델 준비 완료');
   return model;
 }
 
-const ROOM_W = 8;
-const ROOM_D = 10;
-const WALL_H = 2.2; // Lower walls so you can see inside
-const EYE_H = 1.5;
-
 /**
- * Build a composite floor texture from all photos.
- * Takes the bottom portion of each photo and maps it to a
- * wedge on the floor, creating a panoramic top-down view.
+ * Stitch all photos into one seamless panorama with edge blending.
+ * Each photo overlaps ~25% with its neighbor, alpha feathering in overlap zone.
  */
-function buildFloorTexture(
-  images: { url: string; data: ImageData }[],
-  numImages: number
-): HTMLCanvasElement {
-  const size = 2048;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#1a1a2e';
-  ctx.fillRect(0, 0, size, size);
+function stitchPanorama(images: { data: ImageData }[]): HTMLCanvasElement {
+  const imgW = images[0].data.width;
+  const imgH = images[0].data.height;
+  const overlapFrac = 0.25;
+  const overlapPx = Math.floor(imgW * overlapFrac);
+  const step = imgW - overlapPx;
+  const totalW = step * images.length + overlapPx; // wraps around
 
-  const angleStep = (Math.PI * 2) / numImages;
-  const cx = size / 2;
-  const cy = size / 2;
+  const canvas = document.createElement('canvas');
+  canvas.width = totalW;
+  canvas.height = imgH;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, totalW, imgH);
 
   images.forEach((img, i) => {
-    const angle = i * angleStep - Math.PI / 2;
-    const { width, height, data } = img.data;
+    const tmp = document.createElement('canvas');
+    tmp.width = imgW;
+    tmp.height = imgH;
+    const tc = tmp.getContext('2d')!;
+    tc.putImageData(img.data, 0, 0);
 
-    // Draw the bottom 65% of photo (floor area) into a wedge
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = width;
-    tempCanvas.height = height;
-    const tctx = tempCanvas.getContext('2d')!;
-    const imgData = tctx.createImageData(width, height);
-    imgData.data.set(data);
-    tctx.putImageData(imgData, 0, 0);
+    // Create alpha-masked version with feathered edges
+    const masked = document.createElement('canvas');
+    masked.width = imgW;
+    masked.height = imgH;
+    const mc = masked.getContext('2d')!;
 
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(angle);
+    // Gradient mask: fade in left edge, fade out right edge
+    const grad = mc.createLinearGradient(0, 0, imgW, 0);
+    const fadeIn = i > 0 ? overlapFrac : 0;
+    const fadeOut = i < images.length - 1 ? 1 - overlapFrac : 1;
 
-    // Draw the bottom portion as a fan/wedge shape
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    const fanRadius = size * 0.48;
-    const halfAngle = angleStep * 0.55;
-    ctx.arc(0, 0, fanRadius, -halfAngle, halfAngle);
-    ctx.closePath();
-    ctx.clip();
+    grad.addColorStop(0, i > 0 ? 'rgba(255,255,255,0)' : 'rgba(255,255,255,1)');
+    if (fadeIn > 0) grad.addColorStop(fadeIn, 'rgba(255,255,255,1)');
+    if (fadeOut < 1) grad.addColorStop(fadeOut, 'rgba(255,255,255,1)');
+    grad.addColorStop(1, i < images.length - 1 ? 'rgba(255,255,255,0)' : 'rgba(255,255,255,1)');
 
-    // Draw photo's bottom half, stretched to fill the wedge
-    const cropY = Math.floor(height * 0.35); // top 35% = walls/sky, bottom 65% = floor
-    const cropH = height - cropY;
-    ctx.drawImage(
-      tempCanvas,
-      0, cropY, width, cropH,  // source: bottom 65%
-      -fanRadius * 0.7, -fanRadius * 0.5, fanRadius * 1.4, fanRadius  // destination
-    );
+    mc.fillStyle = grad;
+    mc.fillRect(0, 0, imgW, imgH);
+    mc.globalCompositeOperation = 'source-in';
+    mc.drawImage(tmp, 0, 0);
 
-    ctx.restore();
+    ctx.drawImage(masked, i * step, 0);
   });
 
   return canvas;
 }
 
 /**
- * Build wall texture strips from photos.
- * Returns data for textured wall planes.
+ * Build floor texture from the bottom portions of all photos,
+ * arranged as a radial panoramic composite.
  */
-function buildWallSegments(
-  images: { url: string; data: ImageData }[],
-): { angle: number; imageUrl: string; width: number; height: number }[] {
-  return images.map((img, i) => {
-    const angle = (i / images.length) * Math.PI * 2;
-    // Use the top 60% of the photo for walls
+function buildFloorTexture(images: { data: ImageData }[]): HTMLCanvasElement {
+  const size = 2048;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, size, size);
+
+  const n = images.length;
+  const angleStep = (Math.PI * 2) / n;
+
+  images.forEach((img, i) => {
     const { width, height, data } = img.data;
-    const c = document.createElement('canvas');
-    const cropH = Math.floor(height * 0.6);
-    c.width = width;
-    c.height = cropH;
-    const ctx = c.getContext('2d')!;
-    const imgData = ctx.createImageData(width, cropH);
-    // Copy top portion
-    for (let y = 0; y < cropH; y++) {
-      for (let x = 0; x < width; x++) {
-        const si = (y * width + x) * 4;
-        const di = (y * width + x) * 4;
-        imgData.data[di] = data[si];
-        imgData.data[di + 1] = data[si + 1];
-        imgData.data[di + 2] = data[si + 2];
-        imgData.data[di + 3] = data[si + 3];
-      }
-    }
-    ctx.putImageData(imgData, 0, 0);
-    return { angle, imageUrl: c.toDataURL('image/jpeg', 0.8), width, height: cropH };
-  });
-}
+    const tmp = document.createElement('canvas');
+    tmp.width = width;
+    tmp.height = height;
+    tmp.getContext('2d')!.putImageData(img.data, 0, 0);
 
-/**
- * Generate a sparse colored point cloud for depth/atmosphere.
- * Points are placed on floor and lower walls only (no ceiling).
- */
-function buildSparsePointCloud(
-  images: { url: string; data: ImageData }[]
-): { positions: Float32Array; colors: Float32Array; count: number } {
-  const positions: number[] = [];
-  const colors: number[] = [];
-  const angleStep = (Math.PI * 2) / images.length;
-  const halfW = ROOM_W / 2;
-  const halfD = ROOM_D / 2;
+    const angle = i * angleStep - Math.PI / 2;
+    const fan = size * 0.48;
 
-  images.forEach((img, fi) => {
-    const { width, height, data } = img.data;
-    const viewAngle = fi * angleStep;
-    const cosA = Math.cos(viewAngle), sinA = Math.sin(viewAngle);
-    const hfov = Math.PI * 0.35;
-    const vfov = hfov * (height / width);
+    ctx.save();
+    ctx.translate(size / 2, size / 2);
+    ctx.rotate(angle);
 
-    // Sparser sampling - just for depth effect
-    const stepX = Math.max(4, Math.floor(width / 100));
-    const stepY = Math.max(4, Math.floor(height / 60));
+    // Clip to fan wedge
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    const half = angleStep * 0.55;
+    ctx.arc(0, 0, fan, -half, half);
+    ctx.closePath();
+    ctx.clip();
 
-    for (let py = 0; py < height; py += stepY) {
-      for (let px = 0; px < width; px += stepX) {
-        const idx = (py * width + px) * 4;
-        const r = data[idx] / 255;
-        const g = data[idx + 1] / 255;
-        const b = data[idx + 2] / 255;
-
-        const ha = (px / width - 0.5) * hfov * 2;
-        const va = -(py / height - 0.5) * vfov * 2;
-        const lx = Math.tan(ha), ly = Math.tan(va), lz = 1;
-        const rl = Math.sqrt(lx * lx + ly * ly + lz * lz);
-        const wx = (lx / rl) * cosA + (lz / rl) * sinA;
-        const wz = -(lx / rl) * sinA + (lz / rl) * cosA;
-        const wy = ly / rl;
-
-        // Floor only (looking down) + low walls
-        let tMin = Infinity, hx = 0, hy = 0, hz = 0;
-
-        // Floor
-        if (wy < -0.01) {
-          const t = -EYE_H / wy;
-          if (t > 0.1 && t < tMin) {
-            const ix = wx * t, iz = wz * t;
-            if (Math.abs(ix) <= halfW && Math.abs(iz) <= halfD) {
-              tMin = t; hx = ix; hy = 0; hz = iz;
-            }
-          }
-        }
-
-        // Walls up to WALL_H only (no ceiling)
-        const wallChecks: [number, number, (ix: number, iy: number, iz: number) => boolean][] = [
-          [halfW, wx, (_, iy, iz) => iy >= 0 && iy <= WALL_H && Math.abs(iz) <= halfD],
-          [-halfW, wx, (_, iy, iz) => iy >= 0 && iy <= WALL_H && Math.abs(iz) <= halfD],
-          [halfD, wz, (ix, iy, _) => Math.abs(ix) <= halfW && iy >= 0 && iy <= WALL_H],
-          [-halfD, wz, (ix, iy, _) => Math.abs(ix) <= halfW && iy >= 0 && iy <= WALL_H],
-        ];
-
-        for (const [boundary, rayComp, check] of wallChecks) {
-          if (Math.abs(rayComp) > 0.01) {
-            const t = boundary / rayComp;
-            if (t > 0.1 && t < tMin) {
-              const ix = wx * t, iy = EYE_H + wy * t, iz = wz * t;
-              if (check(ix, iy, iz)) {
-                tMin = t; hx = ix; hy = iy; hz = iz;
-              }
-            }
-          }
-        }
-
-        if (tMin < Infinity) {
-          // Depth relief for objects on the floor
-          const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
-          const relief = hy < 0.1 ? brightness * 0.3 : 0; // Only on floor
-          positions.push(hx, hy + relief, hz);
-          colors.push(r, g, b);
-        }
-      }
-    }
+    // Draw bottom 60% of photo (floor area)
+    const cropY = Math.floor(height * 0.4);
+    ctx.drawImage(tmp, 0, cropY, width, height - cropY, -fan * 0.7, -fan * 0.5, fan * 1.4, fan);
+    ctx.restore();
   });
 
-  return {
-    positions: new Float32Array(positions),
-    colors: new Float32Array(colors),
-    count: positions.length / 3,
-  };
+  return c;
 }
 
 export async function buildScene(
@@ -226,87 +134,78 @@ export async function buildScene(
     throw new Error(`AI 모델 로딩 실패: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const angleStep = (Math.PI * 2) / images.length;
-
-  const waypoints: Waypoint[] = images.map((_, i) => {
-    const angle = i * angleStep;
-    return {
-      position: { x: 0, y: EYE_H, z: 0 },
-      lookAt: { x: Math.sin(angle) * 5, y: EYE_H * 0.8, z: Math.cos(angle) * 5 },
-      viewpointIndex: i,
-    };
-  });
-
+  // Object detection
   const viewpoints: ViewpointData[] = [];
   const allObjects: DetectedObject[] = [];
   let objId = 0;
   const canvas = document.createElement('canvas');
+  const n = images.length;
+  const angleStep = (Math.PI * 2) / n;
 
-  for (let i = 0; i < images.length; i++) {
-    const pct = 5 + (i / images.length) * 50;
-    onProgress?.(`뷰포인트 ${i + 1}/${images.length} 객체 인식 중...`, pct);
+  for (let i = 0; i < n; i++) {
+    onProgress?.(`뷰포인트 ${i + 1}/${n} 객체 인식 중...`, 5 + (i / n) * 40);
+    const { url, data: imgData } = images[i];
+    canvas.width = imgData.width;
+    canvas.height = imgData.height;
+    canvas.getContext('2d')!.putImageData(imgData, 0, 0);
 
-    const { url, data: imageData } = images[i];
-    canvas.width = imageData.width;
-    canvas.height = imageData.height;
-    canvas.getContext('2d')!.putImageData(imageData, 0, 0);
-    const predictions = await det.detect(canvas);
+    const preds = await det.detect(canvas);
+    const angle = i * angleStep;
+    const radius = 3.5;
 
-    const viewAngle = i * angleStep;
-    const cosA = Math.cos(viewAngle), sinA = Math.sin(viewAngle);
-    const hfov = Math.PI * 0.35;
+    const objects: DetectedObject[] = preds.filter((p) => p.score >= 0.35).map((p) => {
+      const [bx, by, bw, bh] = p.bbox;
+      const cx = (bx + bw / 2) / imgData.width;
+      const cy = (by + bh / 2) / imgData.height;
+      // Position object in the room at the wall it's seen on
+      const objAngle = angle + (cx - 0.5) * 0.7;
+      const objR = radius * 0.9;
+      return {
+        id: `obj-${objId++}`, label: p.class, score: p.score,
+        bbox: p.bbox as [number, number, number, number],
+        viewpointIndex: i, description: '',
+        color: COLORS[p.class] || COLORS.default,
+        position3D: {
+          x: Math.sin(objAngle) * objR,
+          y: (0.5 - cy) * 2.5 + 1,
+          z: Math.cos(objAngle) * objR,
+        },
+      };
+    });
 
-    const objects: DetectedObject[] = predictions
-      .filter((p) => p.score >= 0.35)
-      .map((p) => {
-        const [bx, by, bw, bh] = p.bbox;
-        const cx = (bx + bw / 2) / imageData.width;
-        const cy = (by + bh / 2) / imageData.height;
-        const ha = (cx - 0.5) * hfov * 2;
-        const depth = 2 + cy * 3;
-        const wx = Math.tan(ha) * cosA + sinA;
-        const wz = -Math.tan(ha) * sinA + cosA;
-        return {
-          id: `obj-${objId++}`, label: p.class, score: p.score,
-          bbox: p.bbox as [number, number, number, number],
-          viewpointIndex: i, description: '',
-          color: COLORS[p.class] || COLORS.default,
-          position3D: {
-            x: Math.max(-ROOM_W / 2, Math.min(ROOM_W / 2, wx * depth * 0.5)),
-            y: Math.max(0, (0.5 - cy) * 2),
-            z: Math.max(-ROOM_D / 2, Math.min(ROOM_D / 2, wz * depth * 0.5)),
-          },
-        };
-      });
-
-    viewpoints.push({ index: i, imageUrl: url, imageData, objects });
+    viewpoints.push({ index: i, imageUrl: url, imageData: imgData, objects });
     allObjects.push(...objects);
   }
 
-  // Build floor texture
-  onProgress?.('바닥 텍스처 생성 중...', 65);
-  const floorCanvas = buildFloorTexture(images, images.length);
-  const floorTextureUrl = floorCanvas.toDataURL('image/jpeg', 0.9);
+  // Stitch panorama
+  onProgress?.('파노라마 스티칭 중...', 55);
+  const panoramaCanvas = stitchPanorama(images);
+  const panoramaUrl = panoramaCanvas.toDataURL('image/jpeg', 0.85);
 
-  // Build wall segments
-  onProgress?.('벽면 텍스처 생성 중...', 75);
-  const wallSegments = buildWallSegments(images);
+  // Build floor
+  onProgress?.('바닥 텍스처 생성 중...', 70);
+  const floorCanvas = buildFloorTexture(images);
+  const floorUrl = floorCanvas.toDataURL('image/jpeg', 0.85);
 
-  // Build sparse point cloud for depth
-  onProgress?.('포인트 클라우드 생성 중...', 85);
-  const pointCloud = buildSparsePointCloud(images);
+  // Waypoints
+  const waypoints: Waypoint[] = images.map((_, i) => {
+    const a = i * angleStep;
+    return {
+      position: { x: 0, y: 1.5, z: 0 },
+      lookAt: { x: Math.sin(a) * 5, y: 1.2, z: Math.cos(a) * 5 },
+      viewpointIndex: i,
+    };
+  });
 
-  onProgress?.('3D 공간 구축 완료!', 100);
+  // Store texture URLs
+  (viewpoints as any).__panoramaUrl = panoramaUrl;
+  (viewpoints as any).__floorUrl = floorUrl;
 
-  // Store floor and wall textures in the first viewpoint's data for access in viewer
-  // (we'll pass them via a workaround since we can't change the type easily)
-  (viewpoints as any).__floorTextureUrl = floorTextureUrl;
-  (viewpoints as any).__wallSegments = wallSegments;
+  onProgress?.('완료!', 100);
 
   return {
-    viewpoints,
-    allObjects,
-    pointCloud,
+    viewpoints, allObjects,
+    pointCloud: { positions: new Float32Array(0), colors: new Float32Array(0), count: 0 },
     waypoints,
     imageWidth: images[0]?.data.width || 0,
     imageHeight: images[0]?.data.height || 0,
