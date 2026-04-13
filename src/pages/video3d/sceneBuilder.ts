@@ -23,25 +23,22 @@ async function loadModel(onProgress?: (msg: string) => void) {
 }
 
 /**
- * Build waypoints: arrange viewpoints in a natural walking path.
- * Places them along a gentle curve so you "walk through" the space.
+ * Build waypoints with TIGHT spacing so point clouds overlap heavily.
  */
 function buildWaypoints(numPoints: number): Waypoint[] {
   const waypoints: Waypoint[] = [];
-  const spacing = 4; // meters between viewpoints
+  const spacing = 1.2; // TIGHT spacing for heavy overlap
 
   for (let i = 0; i < numPoints; i++) {
     const t = numPoints > 1 ? i / (numPoints - 1) : 0.5;
-    // Gentle S-curve path
-    const angle = (t - 0.5) * 0.6;
-    const x = Math.sin(angle) * spacing * numPoints * 0.15;
+    const angle = (t - 0.5) * 0.5;
+    const x = Math.sin(angle) * spacing * numPoints * 0.1;
     const z = -t * spacing * (numPoints - 1);
 
-    // Look slightly ahead along the path
-    const nextT = Math.min(t + 0.1, 1);
-    const nextAngle = (nextT - 0.5) * 0.6;
-    const lx = Math.sin(nextAngle) * spacing * numPoints * 0.15;
-    const lz = -nextT * spacing * (numPoints - 1) - 2;
+    const nextT = Math.min(t + 0.15, 1);
+    const nextAngle = (nextT - 0.5) * 0.5;
+    const lx = Math.sin(nextAngle) * spacing * numPoints * 0.1;
+    const lz = -nextT * spacing * (numPoints - 1) - 1.5;
 
     waypoints.push({
       position: { x, y: 0, z },
@@ -53,30 +50,30 @@ function buildWaypoints(numPoints: number): Waypoint[] {
 }
 
 /**
- * Project image pixels into 3D space from a camera viewpoint.
- * Creates a dome-like point cloud around each viewpoint.
+ * Project image pixels into 3D with COMPACT depth (not spread out).
+ * Creates a dense, room-like structure instead of a fan shape.
  */
 function projectImageToPointCloud(
   imageData: ImageData,
-  waypoint: Waypoint,
-  fov: number = 0.7
+  waypoint: Waypoint
 ): { positions: number[]; colors: number[] } {
   const { width, height, data } = imageData;
   const aspect = height / width;
   const positions: number[] = [];
   const colors: number[] = [];
+  const fov = 0.55;
 
   const cam = waypoint.position;
   const look = waypoint.lookAt;
 
-  // Camera basis
   const dx = look.x - cam.x, dz = look.z - cam.z;
   const len = Math.sqrt(dx * dx + dz * dz) || 1;
   const fwdX = dx / len, fwdZ = dz / len;
   const rX = fwdZ, rZ = -fwdX;
 
-  const stepX = Math.max(2, Math.floor(width / 200));
-  const stepY = Math.max(2, Math.floor(height / 120));
+  // MUCH denser sampling
+  const stepX = Math.max(1, Math.floor(width / 280));
+  const stepY = Math.max(1, Math.floor(height / 160));
 
   for (let py = 0; py < height; py += stepY) {
     for (let px = 0; px < width; px += stepX) {
@@ -88,12 +85,11 @@ function projectImageToPointCloud(
       const sx = (px / width - 0.5) * 2;
       const sy = -(py / height - 0.5) * 2 * aspect;
 
-      // Pseudo-depth: combine vertical position + brightness
+      // COMPACT depth: narrow range (1.5 ~ 3.5) instead of (1.8 ~ 7.3)
       const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
       const vertDepth = (py / height);
-      const depth = 1.8 + vertDepth * 4.5 + brightness * 1.0;
+      const depth = 1.5 + vertDepth * 1.5 + brightness * 0.5;
 
-      // Project into world: cam + forward*depth + right*sx + up*sy
       const wx = cam.x + fwdX * depth + rX * sx * depth * fov;
       const wy = cam.y + sy * depth * fov;
       const wz = cam.z + fwdZ * depth + rZ * sx * depth * fov;
@@ -104,6 +100,24 @@ function projectImageToPointCloud(
   }
 
   return { positions, colors };
+}
+
+function captureFrame(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  timestamp: number
+): Promise<{ imageData: ImageData; imageUrl: string }> {
+  return new Promise((resolve) => {
+    video.currentTime = timestamp;
+    video.addEventListener('seeked', () => {
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      resolve({
+        imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
+        imageUrl: canvas.toDataURL('image/jpeg', 0.85),
+      });
+    }, { once: true });
+  });
 }
 
 export async function buildScene(
@@ -119,7 +133,6 @@ export async function buildScene(
   const allCol: number[] = [];
   let objId = 0;
 
-  // Temp canvas for detection
   const canvas = document.createElement('canvas');
 
   for (let i = 0; i < images.length; i++) {
@@ -129,13 +142,13 @@ export async function buildScene(
     const { url, data: imageData } = images[i];
     const wp = waypoints[i];
 
-    // Object detection
     canvas.width = imageData.width;
     canvas.height = imageData.height;
     const ctx = canvas.getContext('2d')!;
     ctx.putImageData(imageData, 0, 0);
     const predictions = await det.detect(canvas);
 
+    const fov = 0.55;
     const objects: DetectedObject[] = predictions
       .filter((p) => p.score >= 0.35)
       .map((p) => {
@@ -144,13 +157,13 @@ export async function buildScene(
         const cy = (by + bh / 2) / imageData.height;
         const sx = (cx - 0.5) * 2;
         const sy = -(cy - 0.5) * 2 * (imageData.height / imageData.width);
-        const depth = 1.8 + cy * 4.5 + 0.5;
-        const fov = 0.7;
+        const brightness = 0.5;
+        const depth = 1.5 + cy * 1.5 + brightness * 0.5;
 
         const dx = wp.lookAt.x - wp.position.x, dz = wp.lookAt.z - wp.position.z;
         const len = Math.sqrt(dx * dx + dz * dz) || 1;
         const fwdX = dx / len, fwdZ = dz / len;
-        const rX = fwdZ, rZ = -fwdX;
+        const rX = fwdZ;
 
         return {
           id: `obj-${objId++}`,
@@ -163,7 +176,7 @@ export async function buildScene(
           position3D: {
             x: wp.position.x + fwdX * depth + rX * sx * depth * fov,
             y: wp.position.y + sy * depth * fov,
-            z: wp.position.z + fwdZ * depth + rZ * sx * depth * fov,
+            z: wp.position.z + fwdZ * depth,
           },
         };
       });
@@ -171,8 +184,7 @@ export async function buildScene(
     viewpoints.push({ index: i, imageUrl: url, imageData, objects });
     allObjects.push(...objects);
 
-    // Point cloud projection
-    onProgress?.(`뷰포인트 ${i + 1}/${images.length} 포인트 클라우드 생성...`, pct + 3);
+    onProgress?.(`뷰포인트 ${i + 1}/${images.length} 포인트 클라우드...`, pct + 3);
     const { positions, colors } = projectImageToPointCloud(imageData, wp);
     allPos.push(...positions);
     allCol.push(...colors);

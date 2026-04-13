@@ -11,14 +11,14 @@ interface Props {
   activeVP: number | null;
 }
 
-function lerp3(camera: THREE.PerspectiveCamera, controls: OrbitControls, toP: THREE.Vector3, toL: THREE.Vector3, ms = 800) {
-  const fP = camera.position.clone(), fL = controls.target.clone(), t0 = Date.now();
+function lerp3(cam: THREE.PerspectiveCamera, ctrl: OrbitControls, toP: THREE.Vector3, toL: THREE.Vector3, ms = 800) {
+  const fP = cam.position.clone(), fL = ctrl.target.clone(), t0 = Date.now();
   const tick = () => {
     const t = Math.min((Date.now() - t0) / ms, 1);
     const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-    camera.position.lerpVectors(fP, toP, e);
-    controls.target.lerpVectors(fL, toL, e);
-    controls.update();
+    cam.position.lerpVectors(fP, toP, e);
+    ctrl.target.lerpVectors(fL, toL, e);
+    ctrl.update();
     if (t < 1) requestAnimationFrame(tick);
   };
   tick();
@@ -47,7 +47,6 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     controls: OrbitControls;
     renderer: THREE.WebGLRenderer;
     objMeshes: Map<string, THREE.Mesh>;
-    photoDomes: THREE.Mesh[];
     hotspots: THREE.Mesh[];
     animId: number;
   } | null>(null);
@@ -63,9 +62,13 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x050910);
 
-    const wp0 = data.waypoints[0];
-    const camera = new THREE.PerspectiveCamera(70, w / h, 0.05, 200);
-    camera.position.set(wp0.position.x, wp0.position.y + 0.3, wp0.position.z + 1.5);
+    // Start in dollhouse view to see the whole model
+    const wps = data.waypoints;
+    const cx = wps.reduce((s, wp) => s + wp.position.x, 0) / wps.length;
+    const cz = wps.reduce((s, wp) => s + wp.position.z, 0) / wps.length;
+
+    const camera = new THREE.PerspectiveCamera(55, w / h, 0.05, 200);
+    camera.position.set(cx + 6, 5, cz + 8);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(w, h);
@@ -76,8 +79,8 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.target.set(wp0.lookAt.x, wp0.lookAt.y, wp0.lookAt.z);
-    controls.maxDistance = 80;
+    controls.target.set(cx, -0.5, cz);
+    controls.maxDistance = 60;
     controls.minDistance = 0.3;
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.5));
@@ -85,84 +88,54 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     dl.position.set(5, 10, 5);
     scene.add(dl);
 
-    // Ground grid
-    const grid = new THREE.GridHelper(80, 80, 0x0e1425, 0x0e1425);
-    grid.position.y = -5;
+    // Subtle ground grid
+    const grid = new THREE.GridHelper(40, 40, 0x0e1425, 0x0e1425);
+    grid.position.y = -3;
     scene.add(grid);
 
-    // === UNIFIED POINT CLOUD ===
+    // === UNIFIED POINT CLOUD — dense, solid appearance ===
     const { positions, colors, count } = data.pointCloud;
     if (count > 0) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
       scene.add(new THREE.Points(geo, new THREE.PointsMaterial({
-        size: 0.055, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.88,
+        size: 0.035,  // Smaller but denser → solid look
+        vertexColors: true,
+        sizeAttenuation: true,
+        transparent: false,
       })));
     }
 
-    // === PHOTO DOMES: project photo onto a hemisphere at each viewpoint ===
-    const photoDomes: THREE.Mesh[] = [];
-    data.viewpoints.forEach((vp, i) => {
-      const wp = data.waypoints[i];
-      // Create hemisphere facing the look direction
-      const domeGeo = new THREE.SphereGeometry(6, 48, 24, 0, Math.PI * 2, 0, Math.PI * 0.55);
-      const tex = new THREE.TextureLoader().load(vp.imageUrl);
-      tex.colorSpace = THREE.SRGBColorSpace;
-
-      const domeMat = new THREE.MeshBasicMaterial({
-        map: tex, side: THREE.BackSide, transparent: true, opacity: 0.35,
-      });
-      const dome = new THREE.Mesh(domeGeo, domeMat);
-      dome.position.set(wp.position.x, wp.position.y, wp.position.z);
-
-      // Rotate to face look direction
-      const angle = Math.atan2(
-        wp.lookAt.x - wp.position.x,
-        wp.lookAt.z - wp.position.z
-      );
-      dome.rotation.y = angle;
-      scene.add(dome);
-      photoDomes.push(dome);
-    });
-
-    // === FLOOR HOTSPOTS ===
+    // === FLOOR HOTSPOTS (navigation) ===
     const hotspots: THREE.Mesh[] = [];
-    const hsGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.04, 28);
-    const ringGeo = new THREE.RingGeometry(0.4, 0.55, 32);
+    const hsGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.03, 24);
+    const ringGeo = new THREE.RingGeometry(0.2, 0.3, 32);
 
     data.waypoints.forEach((wp, i) => {
-      const mat = new THREE.MeshPhongMaterial({
+      const disc = new THREE.Mesh(hsGeo, new THREE.MeshPhongMaterial({
         color: 0x6366f1, emissive: 0x6366f1, emissiveIntensity: 0.7,
         transparent: true, opacity: 0.85,
-      });
-      const disc = new THREE.Mesh(hsGeo, mat);
-      disc.position.set(wp.position.x, -4.5, wp.position.z);
+      }));
+      disc.position.set(wp.position.x, -2.8, wp.position.z);
       disc.userData = { type: 'hotspot', vpIndex: i };
       scene.add(disc);
       hotspots.push(disc);
 
-      // Ring
       const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
         color: 0x6366f1, side: THREE.DoubleSide, transparent: true, opacity: 0.2,
       }));
-      ring.position.set(wp.position.x, -4.48, wp.position.z);
+      ring.position.set(wp.position.x, -2.78, wp.position.z);
       ring.rotation.x = -Math.PI / 2;
       scene.add(ring);
-
-      // Viewpoint number
-      const lb = label(`${i + 1}`, 'rgba(0,0,0,0.6)', 0.45);
-      lb.position.set(wp.position.x, -4.85, wp.position.z);
-      scene.add(lb);
     });
 
-    // Camera path line
+    // Camera path line on floor
     if (data.waypoints.length >= 2) {
-      const pts = data.waypoints.map((wp) => new THREE.Vector3(wp.position.x, -4.5, wp.position.z));
-      const curve = new THREE.CatmullRomCurve3(pts);
+      const pts = data.waypoints.map((wp) => new THREE.Vector3(wp.position.x, -2.8, wp.position.z));
       const line = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(curve.getPoints(50)),
-        new THREE.LineDashedMaterial({ color: 0x6366f1, dashSize: 0.3, gapSize: 0.2, transparent: true, opacity: 0.25 })
+        new THREE.BufferGeometry().setFromPoints(pts.length > 2 ? new THREE.CatmullRomCurve3(pts).getPoints(50) : pts),
+        new THREE.LineDashedMaterial({ color: 0x6366f1, dashSize: 0.15, gapSize: 0.1, transparent: true, opacity: 0.2 })
       );
       line.computeLineDistances();
       scene.add(line);
@@ -172,9 +145,9 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     const objMeshes = new Map<string, THREE.Mesh>();
     data.allObjects.forEach((obj) => {
       const sz = Math.max(
-        (obj.bbox[2] / data.imageWidth) * 3,
-        (obj.bbox[3] / data.imageHeight) * 2.5,
-        0.2
+        (obj.bbox[2] / data.imageWidth) * 2,
+        (obj.bbox[3] / data.imageHeight) * 1.5,
+        0.15
       );
       const geo = new THREE.BoxGeometry(sz, sz, sz);
       const mat = new THREE.MeshPhongMaterial({
@@ -188,8 +161,8 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
       scene.add(m);
       objMeshes.set(obj.id, m);
 
-      const lb = label(`${obj.label} ${Math.round(obj.score * 100)}%`, obj.color, 0.65);
-      lb.position.set(obj.position3D.x, obj.position3D.y + sz / 2 + 0.3, obj.position3D.z);
+      const lb = label(`${obj.label} ${Math.round(obj.score * 100)}%`, obj.color, 0.55);
+      lb.position.set(obj.position3D.x, obj.position3D.y + sz / 2 + 0.25, obj.position3D.z);
       scene.add(lb);
     });
 
@@ -201,9 +174,8 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
       const sorted = [...objs].sort((a, b) => a.viewpointIndex - b.viewpointIndex);
       const pts = sorted.map((o) => new THREE.Vector3(o.position3D.x, o.position3D.y, o.position3D.z));
       if (pts.length >= 2) {
-        const curve = new THREE.CatmullRomCurve3(pts);
         scene.add(new THREE.Line(
-          new THREE.BufferGeometry().setFromPoints(curve.getPoints(pts.length * 8)),
+          new THREE.BufferGeometry().setFromPoints(pts.length > 2 ? new THREE.CatmullRomCurve3(pts).getPoints(pts.length * 8) : pts),
           new THREE.LineBasicMaterial({ color: sorted[0].color, transparent: true, opacity: 0.3 })
         ));
       }
@@ -224,13 +196,9 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
         else if (ud.type === 'hotspot') {
           const wp = data.waypoints[ud.vpIndex];
           lerp3(camera, controls,
-            new THREE.Vector3(wp.position.x, wp.position.y + 0.3, wp.position.z + 1.5),
+            new THREE.Vector3(wp.position.x, wp.position.y + 0.2, wp.position.z + 1),
             new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z)
           );
-          // Fade in nearby dome, fade out others
-          photoDomes.forEach((d, idx) => {
-            (d.material as THREE.MeshBasicMaterial).opacity = idx === ud.vpIndex ? 0.5 : 0.2;
-          });
         }
       } else selRef.current(null);
     };
@@ -245,15 +213,15 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     };
     renderer.domElement.addEventListener('mousemove', onMove);
 
-    stateRef.current = { camera, controls, renderer, objMeshes, photoDomes, hotspots, animId: 0 };
+    stateRef.current = { camera, controls, renderer, objMeshes, hotspots, animId: 0 };
 
+    // Animation
     const animate = () => {
       const id = requestAnimationFrame(animate);
       if (stateRef.current) stateRef.current.animId = id;
       controls.update();
-      // Pulse hotspots
       const t = Date.now() * 0.001;
-      hotspots.forEach((hs, idx) => { const s = 1 + Math.sin(t * 2 + idx * 0.8) * 0.18; hs.scale.set(s, 1, s); });
+      hotspots.forEach((hs, idx) => { hs.scale.set(1 + Math.sin(t * 2 + idx * 0.8) * 0.15, 1, 1 + Math.sin(t * 2 + idx * 0.8) * 0.15); });
       renderer.render(scene, camera);
     };
     stateRef.current.animId = requestAnimationFrame(animate);
@@ -279,7 +247,7 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
   // View mode
   useEffect(() => {
     if (!stateRef.current) return;
-    const { camera, controls, photoDomes } = stateRef.current;
+    const { camera, controls } = stateRef.current;
     const wps = data.waypoints;
     const cx = wps.reduce((s, w) => s + w.position.x, 0) / wps.length;
     const cz = wps.reduce((s, w) => s + w.position.z, 0) / wps.length;
@@ -288,38 +256,30 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
       case 'walkthrough': {
         const wp = wps[activeVP ?? 0];
         lerp3(camera, controls,
-          new THREE.Vector3(wp.position.x, wp.position.y + 0.3, wp.position.z + 1.5),
-          new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z)
-        );
-        photoDomes.forEach((d) => { (d.material as THREE.MeshBasicMaterial).opacity = 0.4; });
+          new THREE.Vector3(wp.position.x, wp.position.y + 0.2, wp.position.z + 1),
+          new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z));
         break;
       }
       case 'orbit':
-        lerp3(camera, controls, new THREE.Vector3(cx + 10, 6, cz + 12), new THREE.Vector3(cx, 0, cz));
-        photoDomes.forEach((d) => { (d.material as THREE.MeshBasicMaterial).opacity = 0.15; });
+        lerp3(camera, controls, new THREE.Vector3(cx + 6, 4, cz + 8), new THREE.Vector3(cx, -0.5, cz));
         break;
       case 'dollhouse':
-        lerp3(camera, controls, new THREE.Vector3(cx, 20, cz + 6), new THREE.Vector3(cx, 0, cz));
-        photoDomes.forEach((d) => { (d.material as THREE.MeshBasicMaterial).opacity = 0.1; });
+        lerp3(camera, controls, new THREE.Vector3(cx + 2, 10, cz + 4), new THREE.Vector3(cx, -0.5, cz));
         break;
       case 'floorplan':
-        lerp3(camera, controls, new THREE.Vector3(cx, 35, cz), new THREE.Vector3(cx, 0, cz));
-        photoDomes.forEach((d) => { (d.material as THREE.MeshBasicMaterial).opacity = 0.05; });
+        lerp3(camera, controls, new THREE.Vector3(cx, 18, cz), new THREE.Vector3(cx, 0, cz));
         break;
     }
   }, [viewMode, data.waypoints, activeVP]);
 
-  // Active viewpoint navigation
+  // Active viewpoint
   useEffect(() => {
     if (!stateRef.current || activeVP === null || viewMode !== 'walkthrough') return;
     const wp = data.waypoints[activeVP];
     if (!wp) return;
     lerp3(stateRef.current.camera, stateRef.current.controls,
-      new THREE.Vector3(wp.position.x, wp.position.y + 0.3, wp.position.z + 1.5),
+      new THREE.Vector3(wp.position.x, wp.position.y + 0.2, wp.position.z + 1),
       new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z), 600);
-    stateRef.current.photoDomes.forEach((d, i) => {
-      (d.material as THREE.MeshBasicMaterial).opacity = i === activeVP ? 0.5 : 0.2;
-    });
   }, [activeVP, viewMode, data.waypoints]);
 
   // Selection
@@ -335,7 +295,7 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     if (selectedId) {
       const m = stateRef.current.objMeshes.get(selectedId);
       if (m) lerp3(stateRef.current.camera, stateRef.current.controls,
-        new THREE.Vector3(m.position.x + 2, m.position.y + 1, m.position.z + 3), m.position.clone(), 600);
+        new THREE.Vector3(m.position.x + 1.5, m.position.y + 0.8, m.position.z + 2), m.position.clone(), 600);
     }
   }, [selectedId]);
 
