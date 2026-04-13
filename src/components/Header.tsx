@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+
 interface HeaderProps {
   lastUpdated: number;
   onRefresh: () => void;
@@ -20,6 +22,9 @@ export function Header({ lastUpdated, onRefresh, loading }: HeaderProps) {
           <p className="subtitle">AI 관련 최신 뉴스를 한눈에 확인하세요</p>
         </div>
         <div className="header-actions">
+          <Link to="/video-3d-map" className="nav-link">
+            Video 3D Map
+          </Link>
           <span className="last-updated">마지막 업데이트: {formattedTime}</span>
           <button
             className="refresh-btn"
