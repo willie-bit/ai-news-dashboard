@@ -1,62 +1,55 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { VideoUploader } from './VideoUploader';
+import { Uploader } from './Uploader';
 import { ThreeDViewer } from './ThreeDViewer';
 import { ObjectPanel } from './ObjectPanel';
-import { analyzeVideo } from './objectDetector';
-import { VideoAnalysis, ViewMode } from './types';
+import { buildScene } from './sceneBuilder';
+import { SceneAnalysis, ViewMode } from './types';
 
-type Stage = 'upload' | 'analyzing' | 'viewing';
+type Stage = 'upload' | 'building' | 'viewing';
 
 export function Video3DMapPage() {
   const [stage, setStage] = useState<Stage>('upload');
-  const [analysis, setAnalysis] = useState<VideoAnalysis | null>(null);
+  const [scene, setScene] = useState<SceneAnalysis | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('walkthrough');
+  const [activeVP, setActiveVP] = useState<number | null>(0);
   const [msg, setMsg] = useState('');
-  const [progress, setProgress] = useState(0);
-  const [fileName, setFileName] = useState('');
-  const [viewMode, setViewMode] = useState<ViewMode>('orbit');
-  const [activeFrame, setActiveFrame] = useState<number | null>(null);
-  const blobRef = useRef<string | null>(null);
+  const [pct, setPct] = useState(0);
 
-  const onVideo = useCallback(async (url: string, file: File) => {
-    if (blobRef.current) URL.revokeObjectURL(blobRef.current);
-    blobRef.current = url;
-    setStage('analyzing');
-    setFileName(file.name);
+  const onImages = useCallback(async (images: { url: string; data: ImageData }[]) => {
+    setStage('building');
     setMsg('준비 중...');
-    setProgress(0);
-
+    setPct(0);
     try {
-      const result = await analyzeVideo(url, (m, p) => { setMsg(m); setProgress(p); });
-      setAnalysis(result);
+      const result = await buildScene(images, (m, p) => { setMsg(m); setPct(p); });
+      setScene(result);
       setStage('viewing');
-    } catch {
-      setMsg('분석 실패. 다시 시도해주세요.');
+    } catch (e) {
+      console.error(e);
+      setMsg('분석 실패');
       setTimeout(() => setStage('upload'), 2000);
-    } finally {
-      if (blobRef.current) { URL.revokeObjectURL(blobRef.current); blobRef.current = null; }
     }
   }, []);
 
   const onUpdateDesc = useCallback((id: string, desc: string) => {
-    if (!analysis) return;
-    setAnalysis({
-      ...analysis,
-      allObjects: analysis.allObjects.map((o) => o.id === id ? { ...o, description: desc } : o),
-      frames: analysis.frames.map((f) => ({
-        ...f, objects: f.objects.map((o) => o.id === id ? { ...o, description: desc } : o),
+    if (!scene) return;
+    setScene({
+      ...scene,
+      allObjects: scene.allObjects.map((o) => o.id === id ? { ...o, description: desc } : o),
+      viewpoints: scene.viewpoints.map((v) => ({
+        ...v, objects: v.objects.map((o) => o.id === id ? { ...o, description: desc } : o),
       })),
     });
-  }, [analysis]);
+  }, [scene]);
 
-  const reset = () => { setStage('upload'); setAnalysis(null); setSelectedId(null); setActiveFrame(null); setViewMode('orbit'); };
+  const reset = () => { setStage('upload'); setScene(null); setSelectedId(null); setActiveVP(0); setViewMode('walkthrough'); };
 
-  const viewModes: { mode: ViewMode; label: string; icon: string }[] = [
-    { mode: 'orbit', label: '3D 궤도', icon: '🌐' },
-    { mode: 'dollhouse', label: '돌하우스', icon: '🏠' },
-    { mode: 'floorplan', label: '평면도', icon: '📐' },
-    { mode: 'walkthrough', label: '워크스루', icon: '🚶' },
+  const modes: { m: ViewMode; l: string; i: string }[] = [
+    { m: 'walkthrough', l: '워크스루', i: '🚶' },
+    { m: 'orbit', l: '3D 궤도', i: '🌐' },
+    { m: 'dollhouse', l: '돌하우스', i: '🏠' },
+    { m: 'floorplan', l: '평면도', i: '📐' },
   ];
 
   return (
@@ -64,113 +57,93 @@ export function Video3DMapPage() {
       <header className="header">
         <div className="header-content">
           <div className="header-title">
-            <h1>Video 3D Map</h1>
-            <p className="subtitle">Matterport-style 3D 공간 복원 + AI 객체 인식</p>
+            <h1>3D Space Viewer</h1>
+            <p className="subtitle">사진/영상으로 Matterport 스타일 3D 공간을 만듭니다</p>
           </div>
           <div className="header-actions">
-            {stage === 'viewing' && <button className="refresh-btn" onClick={reset}>새 영상</button>}
+            {stage === 'viewing' && <button className="refresh-btn" onClick={reset}>새로 만들기</button>}
             <Link to="/" className="nav-link">뉴스 대시보드</Link>
           </div>
         </div>
       </header>
 
       <main className="main v3d-main">
-        {/* Upload */}
         {stage === 'upload' && (
           <div className="v3d-upload-stage">
             <div className="v3d-intro">
-              <h2>영상을 3D 공간으로 변환하세요</h2>
-              <p>영상을 업로드하면 AI가 프레임별 포인트 클라우드를 생성하고 객체를 인식합니다.</p>
+              <h2>공간을 3D로 체험하세요</h2>
+              <p>여러 각도에서 촬영한 사진이나 영상을 업로드하면 하나의 3D 공간으로 재구성합니다.</p>
               <div className="v3d-features">
-                <div className="v3d-feat"><span>☁️</span><h4>포인트 클라우드</h4><p>프레임 → 컬러 3D 점군 변환</p></div>
-                <div className="v3d-feat"><span>🔍</span><h4>AI 객체 인식</h4><p>COCO-SSD 80+ 종류 감지</p></div>
-                <div className="v3d-feat"><span>🏠</span><h4>뷰 모드</h4><p>궤도/돌하우스/평면도/워크스루</p></div>
-                <div className="v3d-feat"><span>📍</span><h4>공간 네비게이션</h4><p>뷰포인트 클릭으로 이동</p></div>
+                <div className="v3d-feat"><span>📷</span><h4>사진/영상 업로드</h4><p>여러 장의 사진 또는 영상</p></div>
+                <div className="v3d-feat"><span>☁️</span><h4>포인트 클라우드</h4><p>통합 3D 공간 생성</p></div>
+                <div className="v3d-feat"><span>🚶</span><h4>공간 워크스루</h4><p>Matterport 스타일 탐색</p></div>
+                <div className="v3d-feat"><span>🔍</span><h4>AI 객체 인식</h4><p>80+ 종류 자동 감지</p></div>
               </div>
             </div>
-            <VideoUploader onVideoLoaded={onVideo} />
+            <Uploader onImagesReady={onImages} />
           </div>
         )}
 
-        {/* Analyzing */}
-        {stage === 'analyzing' && (
+        {stage === 'building' && (
           <div className="v3d-analyzing">
             <div className="v3d-analyzing-card">
               <div className="spinner large" />
-              <h3>{fileName}</h3>
+              <h3>3D 공간 구축 중</h3>
               <p>{msg}</p>
-              <div className="v3d-progress"><div className="v3d-progress-fill" style={{ width: `${progress}%` }} /></div>
-              <strong>{Math.round(progress)}%</strong>
+              <div className="v3d-progress"><div className="v3d-progress-fill" style={{ width: `${pct}%` }} /></div>
+              <strong>{Math.round(pct)}%</strong>
             </div>
           </div>
         )}
 
-        {/* Viewing */}
-        {stage === 'viewing' && analysis && (
+        {stage === 'viewing' && scene && (
           <div className="v3d-viewing">
-            {/* Stats */}
             <div className="v3d-stats">
-              <div className="stat-item"><span className="stat-value">{analysis.frames.length}</span><span className="stat-label">프레임</span></div>
-              <div className="stat-item"><span className="stat-value">{analysis.allObjects.length}</span><span className="stat-label">객체</span></div>
-              <div className="stat-item">
-                <span className="stat-value">
-                  {analysis.pointCloud.count.toLocaleString()}
-                </span>
-                <span className="stat-label">포인트</span>
-              </div>
-              <div className="stat-item"><span className="stat-value">{analysis.duration.toFixed(1)}s</span><span className="stat-label">길이</span></div>
+              <div className="stat-item"><span className="stat-value">{scene.viewpoints.length}</span><span className="stat-label">뷰포인트</span></div>
+              <div className="stat-item"><span className="stat-value">{scene.allObjects.length}</span><span className="stat-label">객체</span></div>
+              <div className="stat-item"><span className="stat-value">{scene.pointCloud.count.toLocaleString()}</span><span className="stat-label">포인트</span></div>
             </div>
 
-            {/* View Mode Toolbar */}
+            {/* View mode toolbar */}
             <div className="v3d-toolbar">
               <div className="v3d-mode-btns">
-                {viewModes.map(({ mode, label, icon }) => (
-                  <button
-                    key={mode}
-                    className={`v3d-mode-btn ${viewMode === mode ? 'active' : ''}`}
-                    onClick={() => setViewMode(mode)}
-                  >
-                    <span>{icon}</span> {label}
+                {modes.map(({ m, l, i }) => (
+                  <button key={m} className={`v3d-mode-btn ${viewMode === m ? 'active' : ''}`}
+                    onClick={() => setViewMode(m)}>
+                    <span>{i}</span> {l}
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* Main layout */}
             <div className="v3d-layout">
               <div className="v3d-viewer-wrap">
                 <ThreeDViewer
-                  analysis={analysis}
+                  scene={scene}
                   selectedId={selectedId}
                   onSelect={setSelectedId}
                   viewMode={viewMode}
-                  activeFrame={activeFrame}
+                  activeVP={activeVP}
                 />
-
-                {/* Frame Strip */}
+                {/* Viewpoint thumbnails */}
                 <div className="v3d-framestrip">
-                  {analysis.frames.map((frame, i) => (
-                    <button
-                      key={i}
-                      className={`v3d-frame-thumb ${activeFrame === i ? 'active' : ''}`}
-                      onClick={() => { setActiveFrame(i); setViewMode('walkthrough'); }}
-                      title={`${frame.timestamp.toFixed(1)}s`}
+                  {scene.viewpoints.map((vp, i) => (
+                    <button key={i}
+                      className={`v3d-frame-thumb ${activeVP === i ? 'active' : ''}`}
+                      onClick={() => { setActiveVP(i); setViewMode('walkthrough'); }}
                     >
-                      <img src={frame.imageUrl} alt={`F${i + 1}`} />
+                      <img src={vp.imageUrl} alt={`VP ${i + 1}`} />
                       <span className="v3d-thumb-label">
-                        {frame.timestamp.toFixed(1)}s
-                        {frame.objects.length > 0 && (
-                          <span className="v3d-thumb-count">{frame.objects.length}</span>
-                        )}
+                        {i + 1}
+                        {vp.objects.length > 0 && <span className="v3d-thumb-count">{vp.objects.length}</span>}
                       </span>
                     </button>
                   ))}
                 </div>
               </div>
-
               <ObjectPanel
-                objects={analysis.allObjects}
-                frames={analysis.frames}
+                objects={scene.allObjects}
+                viewpoints={scene.viewpoints}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 onUpdateDesc={onUpdateDesc}

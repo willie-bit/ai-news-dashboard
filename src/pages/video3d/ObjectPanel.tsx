@@ -1,15 +1,15 @@
 import { useState } from 'react';
-import { DetectedObject, FrameData } from './types';
+import { DetectedObject, ViewpointData } from './types';
 
 interface Props {
   objects: DetectedObject[];
-  frames: FrameData[];
+  viewpoints: ViewpointData[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onUpdateDesc: (id: string, desc: string) => void;
 }
 
-export function ObjectPanel({ objects, frames, selectedId, onSelect, onUpdateDesc }: Props) {
+export function ObjectPanel({ objects, viewpoints, selectedId, onSelect, onUpdateDesc }: Props) {
   const [editId, setEditId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [filter, setFilter] = useState('all');
@@ -32,10 +32,10 @@ export function ObjectPanel({ objects, frames, selectedId, onSelect, onUpdateDes
       </div>
 
       <div className="v3d-tags">
-        {Array.from(counts.entries()).map(([label, count]) => (
-          <span key={label} className="v3d-tag">
-            <i className="v3d-dot" style={{ background: objects.find((o) => o.label === label)?.color }} />
-            {label} ({count})
+        {Array.from(counts.entries()).map(([lbl, count]) => (
+          <span key={lbl} className="v3d-tag">
+            <i className="v3d-dot" style={{ background: objects.find((o) => o.label === lbl)?.color }} />
+            {lbl} ({count})
           </span>
         ))}
       </div>
@@ -57,19 +57,17 @@ export function ObjectPanel({ objects, frames, selectedId, onSelect, onUpdateDes
             </div>
           </div>
           <div className="v3d-detail-grid">
-            <span>프레임: {selected.frameIndex + 1}</span>
-            <span>시간: {selected.timestamp.toFixed(1)}s</span>
-            <span>위치: ({selected.bbox[0].toFixed(0)}, {selected.bbox[1].toFixed(0)})</span>
+            <span>뷰포인트: {selected.viewpointIndex + 1}</span>
             <span>크기: {selected.bbox[2].toFixed(0)}x{selected.bbox[3].toFixed(0)}</span>
           </div>
-          {frames[selected.frameIndex] && (
+          {viewpoints[selected.viewpointIndex] && (
             <div className="v3d-preview">
-              <img src={frames[selected.frameIndex].imageUrl} alt="" />
+              <img src={viewpoints[selected.viewpointIndex].imageUrl} alt="" />
               <div className="v3d-bbox" style={{
-                left: `${(selected.bbox[0] / frames[selected.frameIndex].imageData.width) * 100}%`,
-                top: `${(selected.bbox[1] / frames[selected.frameIndex].imageData.height) * 100}%`,
-                width: `${(selected.bbox[2] / frames[selected.frameIndex].imageData.width) * 100}%`,
-                height: `${(selected.bbox[3] / frames[selected.frameIndex].imageData.height) * 100}%`,
+                left: `${(selected.bbox[0] / viewpoints[selected.viewpointIndex].imageData.width) * 100}%`,
+                top: `${(selected.bbox[1] / viewpoints[selected.viewpointIndex].imageData.height) * 100}%`,
+                width: `${(selected.bbox[2] / viewpoints[selected.viewpointIndex].imageData.width) * 100}%`,
+                height: `${(selected.bbox[3] / viewpoints[selected.viewpointIndex].imageData.height) * 100}%`,
                 borderColor: selected.color,
               }} />
             </div>
@@ -89,7 +87,7 @@ export function ObjectPanel({ objects, frames, selectedId, onSelect, onUpdateDes
                 {obj.label}
                 <small>{Math.round(obj.score * 100)}%</small>
               </span>
-              <span className="v3d-frame-tag">F{obj.frameIndex + 1}</span>
+              <span className="v3d-frame-tag">VP{obj.viewpointIndex + 1}</span>
             </div>
 
             {editId === obj.id ? (

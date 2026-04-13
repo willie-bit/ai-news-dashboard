@@ -400,6 +400,22 @@ body {
 .v3d-upload h3 { font-size: 1.1rem; }
 .v3d-upload p { color: var(--text-secondary); font-size: 0.85rem; }
 .v3d-upload-hint { color: var(--text-muted); font-size: 0.75rem; }
+.v3d-upload.processing { cursor: default; border-style: solid; border-color: var(--border-color); }
+
+/* Input mode toggle */
+.v3d-input-toggle {
+  display: flex; gap: 0; margin-bottom: 0.75rem; justify-content: center;
+}
+.v3d-input-toggle button {
+  background: var(--bg-secondary); color: var(--text-secondary);
+  border: 1px solid var(--border-color); padding: 0.5rem 1.5rem;
+  font-size: 0.85rem; cursor: pointer; transition: all 0.2s;
+}
+.v3d-input-toggle button:first-child { border-radius: 0.5rem 0 0 0.5rem; }
+.v3d-input-toggle button:last-child { border-radius: 0 0.5rem 0.5rem 0; border-left: none; }
+.v3d-input-toggle button.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
 
 /* Analyzing */
 .v3d-analyzing { display: flex; justify-content: center; align-items: center; min-height: 60vh; }

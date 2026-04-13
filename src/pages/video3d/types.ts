@@ -3,19 +3,16 @@ export interface DetectedObject {
   label: string;
   score: number;
   bbox: [number, number, number, number];
-  frameIndex: number;
-  timestamp: number;
+  viewpointIndex: number;
   description: string;
   color: string;
   position3D: { x: number; y: number; z: number };
-  depth: number;
 }
 
-export interface FrameData {
+export interface ViewpointData {
   index: number;
-  timestamp: number;
-  imageData: ImageData;
   imageUrl: string;
+  imageData: ImageData;
   objects: DetectedObject[];
 }
 
@@ -25,20 +22,21 @@ export interface UnifiedPointCloud {
   count: number;
 }
 
-export interface CameraWaypoint {
+export interface Waypoint {
   position: { x: number; y: number; z: number };
   lookAt: { x: number; y: number; z: number };
-  frameIndex: number;
+  viewpointIndex: number;
 }
 
-export interface VideoAnalysis {
-  frames: FrameData[];
+export interface SceneAnalysis {
+  viewpoints: ViewpointData[];
   allObjects: DetectedObject[];
   pointCloud: UnifiedPointCloud;
-  cameraPath: CameraWaypoint[];
-  videoWidth: number;
-  videoHeight: number;
-  duration: number;
+  waypoints: Waypoint[];
+  imageWidth: number;
+  imageHeight: number;
 }
 
-export type ViewMode = 'orbit' | 'dollhouse' | 'floorplan' | 'walkthrough';
+export type ViewMode = 'walkthrough' | 'orbit' | 'dollhouse' | 'floorplan';
+
+export type InputMode = 'video' | 'photos';
