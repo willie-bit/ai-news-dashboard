@@ -6,68 +6,99 @@ interface Props {
   disabled?: boolean;
 }
 
+const MAX_SIZE = 1024; // Downscale images to max 1024px
+
 function loadImage(url: string): Promise<{ url: string; data: ImageData }> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = img.naturalWidth;
-      c.height = img.naturalHeight;
-      const ctx = c.getContext('2d')!;
-      ctx.drawImage(img, 0, 0);
-      resolve({ url: c.toDataURL('image/jpeg', 0.85), data: ctx.getImageData(0, 0, c.width, c.height) });
+      try {
+        // Downscale to prevent memory issues
+        let w = img.naturalWidth;
+        let h = img.naturalHeight;
+        if (w > MAX_SIZE || h > MAX_SIZE) {
+          const ratio = Math.min(MAX_SIZE / w, MAX_SIZE / h);
+          w = Math.round(w * ratio);
+          h = Math.round(h * ratio);
+        }
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        const ctx = c.getContext('2d');
+        if (!ctx) { reject(new Error('Canvas 생성 실패')); return; }
+        ctx.drawImage(img, 0, 0, w, h);
+        const data = ctx.getImageData(0, 0, w, h);
+        const dataUrl = c.toDataURL('image/jpeg', 0.8);
+        resolve({ url: dataUrl, data });
+      } catch (err) {
+        reject(new Error(`이미지 처리 실패: ${err instanceof Error ? err.message : String(err)}`));
+      }
     };
+    img.onerror = () => reject(new Error('이미지 로딩 실패'));
     img.src = url;
   });
 }
 
 function extractFramesFromVideo(videoUrl: string, onProgress: (p: number) => void): Promise<{ url: string; data: ImageData }[]> {
   return new Promise(async (resolve, reject) => {
-    const video = document.createElement('video');
-    video.crossOrigin = 'anonymous';
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = 'auto';
-    video.src = videoUrl;
+    try {
+      const video = document.createElement('video');
+      video.crossOrigin = 'anonymous';
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'auto';
+      video.src = videoUrl;
 
-    await new Promise<void>((res, rej) => {
-      video.addEventListener('loadedmetadata', () => res(), { once: true });
-      video.addEventListener('error', () => rej(new Error('영상 로딩 실패')), { once: true });
-      video.load();
-    });
-    await new Promise<void>((res) => {
-      if (video.readyState >= 4) return res();
-      video.addEventListener('canplaythrough', () => res(), { once: true });
-    });
-
-    const numFrames = Math.min(Math.max(Math.floor(video.duration * 2), 4), 12);
-    const interval = video.duration / (numFrames + 1);
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d')!;
-    const results: { url: string; data: ImageData }[] = [];
-
-    for (let i = 1; i <= numFrames; i++) {
-      onProgress(i / numFrames * 100);
-      await new Promise<void>((res) => {
-        video.currentTime = interval * i;
-        video.addEventListener('seeked', () => {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          results.push({
-            url: canvas.toDataURL('image/jpeg', 0.85),
-            data: ctx.getImageData(0, 0, canvas.width, canvas.height),
-          });
-          res();
-        }, { once: true });
+      await new Promise<void>((res, rej) => {
+        video.addEventListener('loadedmetadata', () => res(), { once: true });
+        video.addEventListener('error', () => rej(new Error('영상 로딩 실패')), { once: true });
+        video.load();
       });
-    }
+      await new Promise<void>((res) => {
+        if (video.readyState >= 4) return res();
+        video.addEventListener('canplaythrough', () => res(), { once: true });
+      });
 
-    video.pause();
-    video.removeAttribute('src');
-    video.load();
-    resolve(results);
+      // Downscale video frames too
+      let w = video.videoWidth;
+      let h = video.videoHeight;
+      if (w > MAX_SIZE || h > MAX_SIZE) {
+        const ratio = Math.min(MAX_SIZE / w, MAX_SIZE / h);
+        w = Math.round(w * ratio);
+        h = Math.round(h * ratio);
+      }
+
+      const numFrames = Math.min(Math.max(Math.floor(video.duration * 2), 4), 12);
+      const interval = video.duration / (numFrames + 1);
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d')!;
+      const results: { url: string; data: ImageData }[] = [];
+
+      for (let i = 1; i <= numFrames; i++) {
+        onProgress(i / numFrames * 100);
+        await new Promise<void>((res) => {
+          video.currentTime = interval * i;
+          video.addEventListener('seeked', () => {
+            ctx.drawImage(video, 0, 0, w, h);
+            results.push({
+              url: canvas.toDataURL('image/jpeg', 0.8),
+              data: ctx.getImageData(0, 0, w, h),
+            });
+            res();
+          }, { once: true });
+        });
+      }
+
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      resolve(results);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
@@ -76,26 +107,46 @@ export function Uploader({ onImagesReady, disabled }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [error, setError] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handlePhotos = useCallback(async (files: File[]) => {
     const imageFiles = files.filter((f) => f.type.startsWith('image/'));
     if (imageFiles.length === 0) { alert('이미지 파일을 선택해주세요.'); return; }
     setProcessing(true);
-    const images = await Promise.all(
-      imageFiles.map((f) => loadImage(URL.createObjectURL(f)))
-    );
-    onImagesReady(images);
-    setProcessing(false);
+    setError('');
+    try {
+      const blobUrls = imageFiles.map((f) => URL.createObjectURL(f));
+      const images: { url: string; data: ImageData }[] = [];
+      for (let i = 0; i < blobUrls.length; i++) {
+        setProgress(((i + 1) / blobUrls.length) * 100);
+        try {
+          images.push(await loadImage(blobUrls[i]));
+        } catch (err) {
+          console.warn(`Image ${i + 1} skipped:`, err);
+        } finally {
+          URL.revokeObjectURL(blobUrls[i]);
+        }
+      }
+      if (images.length === 0) throw new Error('로딩 가능한 이미지가 없습니다.');
+      onImagesReady(images);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '이미지 로딩 실패');
+    } finally {
+      setProcessing(false);
+    }
   }, [onImagesReady]);
 
   const handleVideo = useCallback(async (file: File) => {
     if (!file.type.startsWith('video/')) { alert('영상 파일을 선택해주세요.'); return; }
     setProcessing(true);
+    setError('');
     const url = URL.createObjectURL(file);
     try {
       const images = await extractFramesFromVideo(url, setProgress);
       onImagesReady(images);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '영상 처리 실패');
     } finally {
       URL.revokeObjectURL(url);
       setProcessing(false);
@@ -112,27 +163,26 @@ export function Uploader({ onImagesReady, disabled }: Props) {
     return (
       <div className="v3d-upload processing">
         <div className="spinner large" />
-        <h3>{mode === 'video' ? '영상에서 프레임 추출 중...' : '이미지 로딩 중...'}</h3>
-        {mode === 'video' && (
-          <div className="v3d-progress" style={{ width: '200px' }}>
-            <div className="v3d-progress-fill" style={{ width: `${progress}%` }} />
-          </div>
-        )}
+        <h3>{mode === 'video' ? '영상에서 프레임 추출 중...' : `이미지 처리 중... ${Math.round(progress)}%`}</h3>
+        <div className="v3d-progress" style={{ width: '200px' }}>
+          <div className="v3d-progress-fill" style={{ width: `${progress}%` }} />
+        </div>
       </div>
     );
   }
 
   return (
     <div>
-      {/* Mode toggle */}
       <div className="v3d-input-toggle">
-        <button className={mode === 'photos' ? 'active' : ''} onClick={() => setMode('photos')}>
-          사진 업로드
-        </button>
-        <button className={mode === 'video' ? 'active' : ''} onClick={() => setMode('video')}>
-          영상 업로드
-        </button>
+        <button className={mode === 'photos' ? 'active' : ''} onClick={() => setMode('photos')}>사진 업로드</button>
+        <button className={mode === 'video' ? 'active' : ''} onClick={() => setMode('video')}>영상 업로드</button>
       </div>
+
+      {error && (
+        <div style={{ color: '#fca5a5', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '0.5rem', padding: '0.75rem 1rem', marginBottom: '0.75rem', fontSize: '0.85rem' }}>
+          {error}
+        </div>
+      )}
 
       <div
         className={`v3d-upload ${dragOver ? 'drag-over' : ''} ${disabled ? 'disabled' : ''}`}
@@ -159,7 +209,7 @@ export function Uploader({ onImagesReady, disabled }: Props) {
           <>
             <h3>공간 사진을 업로드하세요</h3>
             <p>여러 장의 사진을 드래그하거나 클릭하여 선택</p>
-            <span className="v3d-upload-hint">JPG, PNG 등 | 여러 각도에서 촬영한 사진 권장</span>
+            <span className="v3d-upload-hint">JPG, PNG 등 | 자동으로 1024px로 리사이즈됩니다</span>
           </>
         ) : (
           <>

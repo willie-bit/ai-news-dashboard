@@ -71,9 +71,9 @@ function projectImageToPointCloud(
   const fwdX = dx / len, fwdZ = dz / len;
   const rX = fwdZ, rZ = -fwdX;
 
-  // MUCH denser sampling
-  const stepX = Math.max(1, Math.floor(width / 280));
-  const stepY = Math.max(1, Math.floor(height / 160));
+  // Adaptive sampling: denser for fewer images, sparser for many
+  const stepX = Math.max(2, Math.floor(width / 200));
+  const stepY = Math.max(2, Math.floor(height / 120));
 
   for (let py = 0; py < height; py += stepY) {
     for (let px = 0; px < width; px += stepX) {
@@ -124,7 +124,14 @@ export async function buildScene(
   images: { url: string; data: ImageData }[],
   onProgress?: (msg: string, pct: number) => void
 ): Promise<SceneAnalysis> {
-  const det = await loadModel((msg) => onProgress?.(msg, 0));
+  if (images.length === 0) throw new Error('이미지가 없습니다.');
+
+  let det: cocoSsd.ObjectDetection;
+  try {
+    det = await loadModel((msg) => onProgress?.(msg, 0));
+  } catch (err) {
+    throw new Error(`AI 모델 로딩 실패: ${err instanceof Error ? err.message : String(err)}`)
+  }
 
   const waypoints = buildWaypoints(images.length);
   const viewpoints: ViewpointData[] = [];

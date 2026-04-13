@@ -26,9 +26,10 @@ export function Video3DMapPage() {
       setScene(result);
       setStage('viewing');
     } catch (e) {
-      console.error(e);
-      setMsg('분석 실패');
-      setTimeout(() => setStage('upload'), 2000);
+      console.error('Scene build error:', e);
+      const errMsg = e instanceof Error ? e.message : '알 수 없는 오류';
+      setMsg(`분석 실패: ${errMsg}`);
+      setTimeout(() => setStage('upload'), 3000);
     }
   }, []);
 
