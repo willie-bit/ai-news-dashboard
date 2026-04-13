@@ -8,6 +8,7 @@ export interface DetectedObject {
   description: string;
   color: string;
   position3D: { x: number; y: number; z: number };
+  depth: number; // estimated depth 0~1
 }
 
 export interface FrameData {
@@ -16,6 +17,12 @@ export interface FrameData {
   imageData: ImageData;
   imageUrl: string;
   objects: DetectedObject[];
+  // Point cloud data for this frame
+  pointCloud: {
+    positions: Float32Array;
+    colors: Float32Array;
+    count: number;
+  };
 }
 
 export interface VideoAnalysis {
@@ -25,3 +32,5 @@ export interface VideoAnalysis {
   videoHeight: number;
   duration: number;
 }
+
+export type ViewMode = 'orbit' | 'dollhouse' | 'floorplan' | 'walkthrough';

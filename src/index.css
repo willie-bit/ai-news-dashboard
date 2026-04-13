@@ -415,20 +415,73 @@ body {
 .v3d-progress-fill { height: 100%; background: linear-gradient(90deg, var(--gradient-start), var(--gradient-end)); border-radius: 3px; transition: width 0.3s; }
 
 /* Viewing */
-.v3d-viewing { display: flex; flex-direction: column; gap: 1rem; }
+.v3d-viewing { display: flex; flex-direction: column; gap: 0.75rem; }
 .v3d-stats { display: flex; gap: 1rem; }
-.v3d-layout { display: grid; grid-template-columns: 1fr 360px; gap: 1rem; min-height: 600px; }
+.v3d-layout { display: grid; grid-template-columns: 1fr 340px; gap: 1rem; }
+
+/* View Mode Toolbar */
+.v3d-toolbar {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-secondary); border: 1px solid var(--border-color);
+  border-radius: 0.75rem; padding: 0.5rem 1rem;
+}
+.v3d-mode-btns { display: flex; gap: 0.4rem; }
+.v3d-mode-btn {
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border-color); padding: 0.4rem 0.9rem;
+  border-radius: 0.5rem; font-size: 0.8rem; cursor: pointer;
+  transition: all 0.2s; display: flex; align-items: center; gap: 0.35rem;
+}
+.v3d-mode-btn span { font-size: 1rem; }
+.v3d-mode-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+.v3d-mode-btn.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+
+/* 3D Viewer + Frame Strip wrapper */
+.v3d-viewer-wrap { display: flex; flex-direction: column; gap: 0; min-height: 0; }
 
 /* 3D Viewer */
 .v3d-viewer {
-  background: var(--bg-secondary); border: 1px solid var(--border-color);
-  border-radius: 0.75rem; overflow: hidden; position: relative; min-height: 600px;
+  background: #080c18; border: 1px solid var(--border-color);
+  border-radius: 0.75rem 0.75rem 0 0; overflow: hidden; position: relative;
+  min-height: 520px; flex: 1;
 }
 .v3d-viewer canvas { display: block; }
-.v3d-hints { position: absolute; bottom: 12px; left: 12px; display: flex; gap: 0.75rem; z-index: 10; }
+.v3d-hints { position: absolute; bottom: 12px; left: 12px; display: flex; gap: 0.6rem; z-index: 10; }
 .v3d-hints span {
-  background: rgba(0,0,0,0.6); color: rgba(255,255,255,0.7);
-  font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 0.25rem;
+  background: rgba(0,0,0,0.65); color: rgba(255,255,255,0.65);
+  font-size: 0.68rem; padding: 0.2rem 0.5rem; border-radius: 0.25rem;
+  backdrop-filter: blur(4px);
+}
+
+/* Frame Strip */
+.v3d-framestrip {
+  display: flex; gap: 0; overflow-x: auto;
+  background: var(--bg-secondary); border: 1px solid var(--border-color);
+  border-top: none; border-radius: 0 0 0.75rem 0.75rem;
+  padding: 0.4rem 0.5rem;
+  scrollbar-width: thin; scrollbar-color: var(--border-color) transparent;
+}
+.v3d-frame-thumb {
+  flex-shrink: 0; width: 90px; background: transparent; border: 2px solid transparent;
+  border-radius: 0.4rem; padding: 0; cursor: pointer; transition: all 0.2s;
+  overflow: hidden; display: flex; flex-direction: column; position: relative;
+}
+.v3d-frame-thumb img {
+  width: 100%; height: 50px; object-fit: cover; display: block;
+  border-radius: 0.3rem 0.3rem 0 0;
+}
+.v3d-frame-thumb:hover { border-color: var(--accent); }
+.v3d-frame-thumb.active { border-color: var(--accent); box-shadow: 0 0 8px rgba(99,102,241,0.4); }
+.v3d-thumb-label {
+  font-size: 0.65rem; color: var(--text-muted); padding: 0.15rem 0.3rem;
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--bg-primary);
+}
+.v3d-thumb-count {
+  background: var(--accent); color: #fff; font-size: 0.6rem;
+  padding: 0 0.3rem; border-radius: 0.2rem; font-weight: 600;
 }
 
 /* Object Panel */
@@ -497,8 +550,12 @@ body {
 @media (max-width: 768px) {
   .v3d-features { grid-template-columns: repeat(2,1fr); }
   .v3d-layout { grid-template-columns: 1fr; }
-  .v3d-viewer { min-height: 400px; }
+  .v3d-viewer { min-height: 350px; }
   .v3d-panel { max-height: none; }
   .v3d-stats { flex-direction: column; }
   .v3d-hints { flex-wrap: wrap; gap: 0.4rem; }
+  .v3d-mode-btns { flex-wrap: wrap; }
+  .v3d-mode-btn { font-size: 0.72rem; padding: 0.35rem 0.6rem; }
+  .v3d-frame-thumb { width: 72px; }
+  .v3d-frame-thumb img { height: 40px; }
 }
