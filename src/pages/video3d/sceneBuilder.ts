@@ -22,58 +22,35 @@ async function loadModel(onProgress?: (msg: string) => void) {
   return model;
 }
 
-/**
- * Build waypoints with TIGHT spacing so point clouds overlap heavily.
- */
-function buildWaypoints(numPoints: number): Waypoint[] {
-  const waypoints: Waypoint[] = [];
-  const spacing = 1.2; // TIGHT spacing for heavy overlap
-
-  for (let i = 0; i < numPoints; i++) {
-    const t = numPoints > 1 ? i / (numPoints - 1) : 0.5;
-    const angle = (t - 0.5) * 0.5;
-    const x = Math.sin(angle) * spacing * numPoints * 0.1;
-    const z = -t * spacing * (numPoints - 1);
-
-    const nextT = Math.min(t + 0.15, 1);
-    const nextAngle = (nextT - 0.5) * 0.5;
-    const lx = Math.sin(nextAngle) * spacing * numPoints * 0.1;
-    const lz = -nextT * spacing * (numPoints - 1) - 1.5;
-
-    waypoints.push({
-      position: { x, y: 0, z },
-      lookAt: { x: lx, y: 0, z: lz },
-      viewpointIndex: i,
-    });
-  }
-  return waypoints;
-}
+// Room dimensions
+const ROOM_W = 8;   // width (X)
+const ROOM_D = 10;  // depth (Z)
+const ROOM_H = 3.5; // height (Y)
+const EYE_H = 1.6;  // camera eye height
 
 /**
- * Project image pixels into 3D with COMPACT depth (not spread out).
- * Creates a dense, room-like structure instead of a fan shape.
+ * Project image pixels onto room surfaces (floor, walls, ceiling)
+ * using ray-box intersection. Creates a cohesive room-shaped point cloud.
  */
-function projectImageToPointCloud(
+function projectToRoom(
   imageData: ImageData,
-  waypoint: Waypoint
+  viewAngle: number, // radians: direction this photo looks toward
 ): { positions: number[]; colors: number[] } {
   const { width, height, data } = imageData;
-  const aspect = height / width;
   const positions: number[] = [];
   const colors: number[] = [];
-  const fov = 0.55;
 
-  const cam = waypoint.position;
-  const look = waypoint.lookAt;
+  const hfov = Math.PI * 0.38;
+  const vfov = hfov * (height / width);
 
-  const dx = look.x - cam.x, dz = look.z - cam.z;
-  const len = Math.sqrt(dx * dx + dz * dz) || 1;
-  const fwdX = dx / len, fwdZ = dz / len;
-  const rX = fwdZ, rZ = -fwdX;
+  const cosA = Math.cos(viewAngle);
+  const sinA = Math.sin(viewAngle);
 
-  // Adaptive sampling: denser for fewer images, sparser for many
-  const stepX = Math.max(2, Math.floor(width / 200));
-  const stepY = Math.max(2, Math.floor(height / 120));
+  const stepX = Math.max(2, Math.floor(width / 220));
+  const stepY = Math.max(2, Math.floor(height / 130));
+
+  const halfW = ROOM_W / 2;
+  const halfD = ROOM_D / 2;
 
   for (let py = 0; py < height; py += stepY) {
     for (let px = 0; px < width; px += stepX) {
@@ -82,42 +59,105 @@ function projectImageToPointCloud(
       const g = data[idx + 1] / 255;
       const b = data[idx + 2] / 255;
 
-      const sx = (px / width - 0.5) * 2;
-      const sy = -(py / height - 0.5) * 2 * aspect;
+      // Pixel → ray angles
+      const ha = (px / width - 0.5) * hfov * 2;
+      const va = -(py / height - 0.5) * vfov * 2;
 
-      // COMPACT depth: narrow range (1.5 ~ 3.5) instead of (1.8 ~ 7.3)
-      const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
-      const vertDepth = (py / height);
-      const depth = 1.5 + vertDepth * 1.5 + brightness * 0.5;
+      // Local ray direction (looking along +Z in camera space)
+      const lx = Math.tan(ha);
+      const ly = Math.tan(va);
+      const lz = 1.0;
+      const rLen = Math.sqrt(lx * lx + ly * ly + lz * lz);
+      const nlx = lx / rLen, nly = ly / rLen, nlz = lz / rLen;
 
-      const wx = cam.x + fwdX * depth + rX * sx * depth * fov;
-      const wy = cam.y + sy * depth * fov;
-      const wz = cam.z + fwdZ * depth + rZ * sx * depth * fov;
+      // Rotate by viewAngle around Y
+      const wx = nlx * cosA + nlz * sinA;
+      const wz = -nlx * sinA + nlz * cosA;
+      const wy = nly;
 
-      positions.push(wx, wy, wz);
-      colors.push(r, g, b);
+      // Ray from (0, EYE_H, 0) in direction (wx, wy, wz)
+      // Find closest intersection with room box surfaces
+      let tMin = Infinity;
+      let hx = 0, hy = 0, hz = 0;
+
+      // Floor (y = 0)
+      if (wy < -0.001) {
+        const t = -EYE_H / wy;
+        if (t > 0.1 && t < tMin) {
+          const ix = wx * t, iz = wz * t;
+          if (Math.abs(ix) <= halfW && Math.abs(iz) <= halfD) {
+            tMin = t; hx = ix; hy = 0; hz = iz;
+          }
+        }
+      }
+
+      // Ceiling (y = ROOM_H)
+      if (wy > 0.001) {
+        const t = (ROOM_H - EYE_H) / wy;
+        if (t > 0.1 && t < tMin) {
+          const ix = wx * t, iz = wz * t;
+          if (Math.abs(ix) <= halfW && Math.abs(iz) <= halfD) {
+            tMin = t; hx = ix; hy = ROOM_H; hz = iz;
+          }
+        }
+      }
+
+      // +X wall
+      if (wx > 0.001) {
+        const t = halfW / wx;
+        if (t > 0.1 && t < tMin) {
+          const iy = EYE_H + wy * t, iz = wz * t;
+          if (iy >= 0 && iy <= ROOM_H && Math.abs(iz) <= halfD) {
+            tMin = t; hx = halfW; hy = iy; hz = iz;
+          }
+        }
+      }
+      // -X wall
+      if (wx < -0.001) {
+        const t = -halfW / wx;
+        if (t > 0.1 && t < tMin) {
+          const iy = EYE_H + wy * t, iz = wz * t;
+          if (iy >= 0 && iy <= ROOM_H && Math.abs(iz) <= halfD) {
+            tMin = t; hx = -halfW; hy = iy; hz = iz;
+          }
+        }
+      }
+      // +Z wall
+      if (wz > 0.001) {
+        const t = halfD / wz;
+        if (t > 0.1 && t < tMin) {
+          const ix = wx * t, iy = EYE_H + wy * t;
+          if (Math.abs(ix) <= halfW && iy >= 0 && iy <= ROOM_H) {
+            tMin = t; hx = ix; hy = iy; hz = halfD;
+          }
+        }
+      }
+      // -Z wall
+      if (wz < -0.001) {
+        const t = -halfD / wz;
+        if (t > 0.1 && t < tMin) {
+          const ix = wx * t, iy = EYE_H + wy * t;
+          if (Math.abs(ix) <= halfW && iy >= 0 && iy <= ROOM_H) {
+            tMin = t; hx = ix; hy = iy; hz = -halfD;
+          }
+        }
+      }
+
+      if (tMin < Infinity) {
+        // Add slight depth relief: brighter areas pull inward (furniture sticks up)
+        const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+        const relief = brightness * 0.15; // subtle depth
+        const pullX = -wx * relief;
+        const pullY = hy > 0.1 && hy < ROOM_H - 0.1 ? 0 : (hy < 0.1 ? relief * 0.5 : -relief * 0.3);
+        const pullZ = -wz * relief;
+
+        positions.push(hx + pullX, hy + pullY, hz + pullZ);
+        colors.push(r, g, b);
+      }
     }
   }
 
   return { positions, colors };
-}
-
-function captureFrame(
-  video: HTMLVideoElement,
-  canvas: HTMLCanvasElement,
-  timestamp: number
-): Promise<{ imageData: ImageData; imageUrl: string }> {
-  return new Promise((resolve) => {
-    video.currentTime = timestamp;
-    video.addEventListener('seeked', () => {
-      const ctx = canvas.getContext('2d')!;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      resolve({
-        imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
-        imageUrl: canvas.toDataURL('image/jpeg', 0.85),
-      });
-    }, { once: true });
-  });
 }
 
 export async function buildScene(
@@ -130,10 +170,22 @@ export async function buildScene(
   try {
     det = await loadModel((msg) => onProgress?.(msg, 0));
   } catch (err) {
-    throw new Error(`AI 모델 로딩 실패: ${err instanceof Error ? err.message : String(err)}`)
+    throw new Error(`AI 모델 로딩 실패: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const waypoints = buildWaypoints(images.length);
+  // Distribute view angles evenly around 360°
+  const angleStep = (Math.PI * 2) / images.length;
+
+  // Waypoints: all at center, looking outward in different directions
+  const waypoints: Waypoint[] = images.map((_, i) => {
+    const angle = i * angleStep;
+    return {
+      position: { x: 0, y: EYE_H, z: 0 },
+      lookAt: { x: Math.sin(angle) * 5, y: EYE_H, z: Math.cos(angle) * 5 },
+      viewpointIndex: i,
+    };
+  });
+
   const viewpoints: ViewpointData[] = [];
   const allObjects: DetectedObject[] = [];
   const allPos: number[] = [];
@@ -147,30 +199,32 @@ export async function buildScene(
     onProgress?.(`뷰포인트 ${i + 1}/${images.length} 처리 중...`, pct);
 
     const { url, data: imageData } = images[i];
-    const wp = waypoints[i];
+    const viewAngle = i * angleStep;
 
+    // Object detection
     canvas.width = imageData.width;
     canvas.height = imageData.height;
-    const ctx = canvas.getContext('2d')!;
-    ctx.putImageData(imageData, 0, 0);
+    canvas.getContext('2d')!.putImageData(imageData, 0, 0);
     const predictions = await det.detect(canvas);
 
-    const fov = 0.55;
+    const cosA = Math.cos(viewAngle), sinA = Math.sin(viewAngle);
+    const hfov = Math.PI * 0.38;
+    const vfov = hfov * (imageData.height / imageData.width);
+
     const objects: DetectedObject[] = predictions
       .filter((p) => p.score >= 0.35)
       .map((p) => {
         const [bx, by, bw, bh] = p.bbox;
         const cx = (bx + bw / 2) / imageData.width;
         const cy = (by + bh / 2) / imageData.height;
-        const sx = (cx - 0.5) * 2;
-        const sy = -(cy - 0.5) * 2 * (imageData.height / imageData.width);
-        const brightness = 0.5;
-        const depth = 1.5 + cy * 1.5 + brightness * 0.5;
-
-        const dx = wp.lookAt.x - wp.position.x, dz = wp.lookAt.z - wp.position.z;
-        const len = Math.sqrt(dx * dx + dz * dz) || 1;
-        const fwdX = dx / len, fwdZ = dz / len;
-        const rX = fwdZ;
+        const ha = (cx - 0.5) * hfov * 2;
+        const va = -(cy - 0.5) * vfov * 2;
+        const lx = Math.tan(ha), ly = Math.tan(va);
+        const rl = Math.sqrt(lx * lx + ly * ly + 1);
+        const wx = (lx / rl) * cosA + (1 / rl) * sinA;
+        const wz = -(lx / rl) * sinA + (1 / rl) * cosA;
+        const wy = ly / rl;
+        const depth = wy < -0.01 ? -EYE_H / wy : 3;
 
         return {
           id: `obj-${objId++}`,
@@ -181,9 +235,9 @@ export async function buildScene(
           description: '',
           color: COLORS[p.class] || COLORS.default,
           position3D: {
-            x: wp.position.x + fwdX * depth + rX * sx * depth * fov,
-            y: wp.position.y + sy * depth * fov,
-            z: wp.position.z + fwdZ * depth,
+            x: Math.max(-ROOM_W / 2, Math.min(ROOM_W / 2, wx * depth)),
+            y: Math.max(0, Math.min(ROOM_H, EYE_H + wy * depth)),
+            z: Math.max(-ROOM_D / 2, Math.min(ROOM_D / 2, wz * depth)),
           },
         };
       });
@@ -191,8 +245,9 @@ export async function buildScene(
     viewpoints.push({ index: i, imageUrl: url, imageData, objects });
     allObjects.push(...objects);
 
-    onProgress?.(`뷰포인트 ${i + 1}/${images.length} 포인트 클라우드...`, pct + 3);
-    const { positions, colors } = projectImageToPointCloud(imageData, wp);
+    // Project onto room surfaces
+    onProgress?.(`뷰포인트 ${i + 1}/${images.length} 공간 투영 중...`, pct + 3);
+    const { positions, colors } = projectToRoom(imageData, viewAngle);
     allPos.push(...positions);
     allCol.push(...colors);
   }

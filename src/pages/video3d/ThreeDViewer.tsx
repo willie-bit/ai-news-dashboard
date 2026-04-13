@@ -62,13 +62,9 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x050910);
 
-    // Start in dollhouse view to see the whole model
-    const wps = data.waypoints;
-    const cx = wps.reduce((s, wp) => s + wp.position.x, 0) / wps.length;
-    const cz = wps.reduce((s, wp) => s + wp.position.z, 0) / wps.length;
-
-    const camera = new THREE.PerspectiveCamera(55, w / h, 0.05, 200);
-    camera.position.set(cx + 6, 5, cz + 8);
+    // Start in dollhouse view — looking down at the room model
+    const camera = new THREE.PerspectiveCamera(50, w / h, 0.05, 200);
+    camera.position.set(6, 12, 8);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(w, h);
@@ -79,7 +75,7 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.target.set(cx, -0.5, cz);
+    controls.target.set(0, 1, 0);
     controls.maxDistance = 60;
     controls.minDistance = 0.3;
 
@@ -88,9 +84,9 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     dl.position.set(5, 10, 5);
     scene.add(dl);
 
-    // Subtle ground grid
-    const grid = new THREE.GridHelper(40, 40, 0x0e1425, 0x0e1425);
-    grid.position.y = -3;
+    // Subtle ground grid at floor level
+    const grid = new THREE.GridHelper(20, 20, 0x0e1425, 0x0e1425);
+    grid.position.y = -0.01;
     scene.add(grid);
 
     // === UNIFIED POINT CLOUD — dense, solid appearance ===
@@ -117,7 +113,7 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
         color: 0x6366f1, emissive: 0x6366f1, emissiveIntensity: 0.7,
         transparent: true, opacity: 0.85,
       }));
-      disc.position.set(wp.position.x, -2.8, wp.position.z);
+      disc.position.set(wp.position.x, 0.05, wp.position.z);
       disc.userData = { type: 'hotspot', vpIndex: i };
       scene.add(disc);
       hotspots.push(disc);
@@ -125,14 +121,14 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
       const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
         color: 0x6366f1, side: THREE.DoubleSide, transparent: true, opacity: 0.2,
       }));
-      ring.position.set(wp.position.x, -2.78, wp.position.z);
+      ring.position.set(wp.position.x, 0.06, wp.position.z);
       ring.rotation.x = -Math.PI / 2;
       scene.add(ring);
     });
 
     // Camera path line on floor
     if (data.waypoints.length >= 2) {
-      const pts = data.waypoints.map((wp) => new THREE.Vector3(wp.position.x, -2.8, wp.position.z));
+      const pts = data.waypoints.map((wp) => new THREE.Vector3(wp.position.x, 0.05, wp.position.z));
       const line = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints(pts.length > 2 ? new THREE.CatmullRomCurve3(pts).getPoints(50) : pts),
         new THREE.LineDashedMaterial({ color: 0x6366f1, dashSize: 0.15, gapSize: 0.1, transparent: true, opacity: 0.2 })
@@ -196,7 +192,7 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
         else if (ud.type === 'hotspot') {
           const wp = data.waypoints[ud.vpIndex];
           lerp3(camera, controls,
-            new THREE.Vector3(wp.position.x, wp.position.y + 0.2, wp.position.z + 1),
+            new THREE.Vector3(wp.position.x, wp.position.y, wp.position.z),
             new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z)
           );
         }
@@ -248,26 +244,22 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
   useEffect(() => {
     if (!stateRef.current) return;
     const { camera, controls } = stateRef.current;
-    const wps = data.waypoints;
-    const cx = wps.reduce((s, w) => s + w.position.x, 0) / wps.length;
-    const cz = wps.reduce((s, w) => s + w.position.z, 0) / wps.length;
-
     switch (viewMode) {
       case 'walkthrough': {
-        const wp = wps[activeVP ?? 0];
+        const wp = data.waypoints[activeVP ?? 0];
         lerp3(camera, controls,
-          new THREE.Vector3(wp.position.x, wp.position.y + 0.2, wp.position.z + 1),
+          new THREE.Vector3(wp.position.x, wp.position.y, wp.position.z),
           new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z));
         break;
       }
       case 'orbit':
-        lerp3(camera, controls, new THREE.Vector3(cx + 6, 4, cz + 8), new THREE.Vector3(cx, -0.5, cz));
+        lerp3(camera, controls, new THREE.Vector3(7, 6, 9), new THREE.Vector3(0, 1, 0));
         break;
       case 'dollhouse':
-        lerp3(camera, controls, new THREE.Vector3(cx + 2, 10, cz + 4), new THREE.Vector3(cx, -0.5, cz));
+        lerp3(camera, controls, new THREE.Vector3(3, 12, 6), new THREE.Vector3(0, 1, 0));
         break;
       case 'floorplan':
-        lerp3(camera, controls, new THREE.Vector3(cx, 18, cz), new THREE.Vector3(cx, 0, cz));
+        lerp3(camera, controls, new THREE.Vector3(0, 20, 0.1), new THREE.Vector3(0, 0, 0));
         break;
     }
   }, [viewMode, data.waypoints, activeVP]);
@@ -278,7 +270,7 @@ export function ThreeDViewer({ scene: data, selectedId, onSelect, viewMode, acti
     const wp = data.waypoints[activeVP];
     if (!wp) return;
     lerp3(stateRef.current.camera, stateRef.current.controls,
-      new THREE.Vector3(wp.position.x, wp.position.y + 0.2, wp.position.z + 1),
+      new THREE.Vector3(wp.position.x, wp.position.y, wp.position.z),
       new THREE.Vector3(wp.lookAt.x, wp.lookAt.y, wp.lookAt.z), 600);
   }, [activeVP, viewMode, data.waypoints]);
 
