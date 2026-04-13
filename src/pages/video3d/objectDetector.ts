@@ -1,6 +1,6 @@
 import * as tf from '@tensorflow/tfjs';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
-import { DetectedObject, FrameData, VideoAnalysis } from './types';
+import { DetectedObject, FrameData, VideoAnalysis, UnifiedPointCloud, CameraWaypoint } from './types';
 
 let model: cocoSsd.ObjectDetection | null = null;
 
@@ -31,61 +31,109 @@ export async function loadModel(onProgress?: (msg: string) => void): Promise<coc
 }
 
 /**
- * Generate a colored point cloud from frame pixel data.
- * Uses brightness + vertical position for pseudo-depth estimation.
+ * Build a unified 3D point cloud from all frames.
+ * Simulates camera moving along a path; each frame's pixels
+ * are projected into a shared 3D space via pseudo-depth estimation.
  */
-function generatePointCloud(
-  imageData: ImageData,
-  frameIndex: number,
-  spacing: number = 4
-): { positions: Float32Array; colors: Float32Array; count: number } {
-  const { width, height, data } = imageData;
-  const stepX = Math.max(spacing, Math.floor(width / 160));
-  const stepY = Math.max(spacing, Math.floor(height / 90));
-  const capacity = Math.ceil(width / stepX) * Math.ceil(height / stepY);
+function buildUnifiedPointCloud(
+  frames: FrameData[],
+  videoWidth: number,
+  videoHeight: number
+): { pointCloud: UnifiedPointCloud; cameraPath: CameraWaypoint[] } {
+  const numFrames = frames.length;
+  const aspect = videoHeight / videoWidth;
+  const fov = 0.6; // field of view factor
 
-  const positions = new Float32Array(capacity * 3);
-  const colors = new Float32Array(capacity * 3);
-  let count = 0;
+  // Camera moves along a gentle forward path with slight arc
+  const pathLength = numFrames * 2;
+  const cameraPath: CameraWaypoint[] = [];
 
-  const frameZ = -frameIndex * 5;
-  const scaleX = 8;
-  const scaleY = 8 * (height / width);
+  for (let i = 0; i < numFrames; i++) {
+    const t = i / Math.max(numFrames - 1, 1);
+    // Gentle forward + slight horizontal sweep
+    const angle = (t - 0.5) * 0.4; // slight arc
+    const cx = Math.sin(angle) * pathLength * 0.3;
+    const cy = 0;
+    const cz = -t * pathLength;
 
-  for (let py = 0; py < height; py += stepY) {
-    for (let px = 0; px < width; px += stepX) {
-      const i = (py * width + px) * 4;
-      const r = data[i] / 255;
-      const g = data[i + 1] / 255;
-      const b = data[i + 2] / 255;
-      const a = data[i + 3] / 255;
-      if (a < 0.5) continue;
+    // Look direction: forward with slight inward turn
+    const lx = -Math.sin(angle) * 2;
+    const ly = 0;
+    const lz = cz - 3;
 
-      // Normalize coordinates to [-0.5, 0.5]
-      const nx = px / width - 0.5;
-      const ny = -(py / height - 0.5);
-
-      // Pseudo-depth: combine vertical position, brightness, and edge distance
-      const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
-      const edgeDist = 1 - Math.sqrt(nx * nx + ny * ny) * 1.2;
-      const verticalDepth = (py / height) * 0.6; // lower = closer
-      const depthOffset = (verticalDepth + brightness * 0.25 + edgeDist * 0.15) * 2.5;
-
-      const idx = count * 3;
-      positions[idx] = nx * scaleX;
-      positions[idx + 1] = ny * scaleY;
-      positions[idx + 2] = frameZ - depthOffset;
-      colors[idx] = r;
-      colors[idx + 1] = g;
-      colors[idx + 2] = b;
-      count++;
-    }
+    cameraPath.push({
+      position: { x: cx, y: cy, z: cz },
+      lookAt: { x: cx + lx, y: ly, z: lz },
+      frameIndex: i,
+    });
   }
 
+  // Collect all points
+  const allPos: number[] = [];
+  const allCol: number[] = [];
+
+  frames.forEach((frame, fi) => {
+    const { imageData } = frame;
+    const { width, height, data } = imageData;
+    const cam = cameraPath[fi];
+
+    // Camera basis vectors
+    const dx = cam.lookAt.x - cam.position.x;
+    const dy = cam.lookAt.y - cam.position.y;
+    const dz = cam.lookAt.z - cam.position.z;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const fwdX = dx / len, fwdY = dy / len, fwdZ = dz / len;
+
+    // Right = forward x up(0,1,0)
+    const rightX = fwdZ, rightZ = -fwdX;
+    const rightLen = Math.sqrt(rightX * rightX + rightZ * rightZ) || 1;
+    const rX = rightX / rightLen, rZ = rightZ / rightLen;
+
+    // Up = right x forward
+    const uX = fwdZ * 0 - fwdY * rZ;
+    const uY = fwdX * rZ - fwdZ * rX;
+    const uZ = fwdY * rX - fwdX * 0;
+    const uLen = Math.sqrt(uX * uX + uY * uY + uZ * uZ) || 1;
+    const upX = uX / uLen, upY = uY / uLen, upZ = uZ / uLen;
+
+    // Sample pixels
+    const stepX = Math.max(2, Math.floor(width / 180));
+    const stepY = Math.max(2, Math.floor(height / 100));
+
+    for (let py = 0; py < height; py += stepY) {
+      for (let px = 0; px < width; px += stepX) {
+        const idx = (py * width + px) * 4;
+        const r = data[idx] / 255;
+        const g = data[idx + 1] / 255;
+        const b = data[idx + 2] / 255;
+
+        // Normalized screen coords [-1, 1]
+        const sx = (px / width - 0.5) * 2;
+        const sy = -(py / height - 0.5) * 2 * aspect;
+
+        // Pseudo-depth estimation
+        const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+        const verticalDepth = (py / height); // lower = closer
+        const depth = 1.5 + verticalDepth * 4 + brightness * 1.2;
+
+        // Project into world space:  cam + forward*depth + right*sx*depth*fov + up*sy*depth*fov
+        const wx = cam.position.x + fwdX * depth + rX * sx * depth * fov + upX * sy * depth * fov;
+        const wy = cam.position.y + fwdY * depth + 0 * sx * depth * fov + upY * sy * depth * fov;
+        const wz = cam.position.z + fwdZ * depth + rZ * sx * depth * fov + upZ * sy * depth * fov;
+
+        allPos.push(wx, wy, wz);
+        allCol.push(r, g, b);
+      }
+    }
+  });
+
   return {
-    positions: positions.slice(0, count * 3),
-    colors: colors.slice(0, count * 3),
-    count,
+    pointCloud: {
+      positions: new Float32Array(allPos),
+      colors: new Float32Array(allCol),
+      count: allPos.length / 3,
+    },
+    cameraPath,
   };
 }
 
@@ -145,20 +193,19 @@ export async function analyzeVideo(
   let objectId = 0;
 
   for (let i = 0; i < timestamps.length; i++) {
-    const pct = 10 + (i / timestamps.length) * 70;
+    const pct = 10 + (i / timestamps.length) * 60;
     onProgress?.(`프레임 ${i + 1}/${timestamps.length} 분석 중...`, pct);
 
     const { imageData, imageUrl } = await captureFrame(video, canvas, timestamps[i]);
-
-    // Object detection
     const predictions = await detectionModel.detect(canvas);
+
     const frameObjects: DetectedObject[] = predictions
       .filter((p) => p.score >= 0.35)
       .map((p) => {
         const [bx, by, bw, bh] = p.bbox;
         const cx = (bx + bw / 2) / video.videoWidth;
         const cy = (by + bh / 2) / video.videoHeight;
-        const depth = cy * 0.6 + 0.2; // lower in frame = closer
+        const depth = cy * 0.6 + 0.2;
 
         return {
           id: `obj-${objectId++}`,
@@ -170,33 +217,53 @@ export async function analyzeVideo(
           description: '',
           color: getObjectColor(p.class),
           depth,
-          position3D: {
-            x: (cx - 0.5) * 8,
-            y: -(cy - 0.5) * (8 * video.videoHeight / video.videoWidth),
-            z: -i * 5 - depth * 2.5,
-          },
+          // position3D will be recalculated after camera path is built
+          position3D: { x: 0, y: 0, z: 0 },
         };
       });
 
-    // Generate point cloud
-    onProgress?.(`프레임 ${i + 1}/${timestamps.length} 포인트 클라우드 생성 중...`, pct + 5);
-    const pointCloud = generatePointCloud(imageData, i);
-
-    frames.push({
-      index: i,
-      timestamp: timestamps[i],
-      imageData,
-      imageUrl,
-      objects: frameObjects,
-      pointCloud,
-    });
+    frames.push({ index: i, timestamp: timestamps[i], imageData, imageUrl, objects: frameObjects });
     allObjects.push(...frameObjects);
   }
+
+  // Build unified point cloud
+  onProgress?.('3D 공간 구축 중...', 80);
+  const { pointCloud, cameraPath } = buildUnifiedPointCloud(frames, video.videoWidth, video.videoHeight);
+
+  // Recalculate object positions using camera path
+  const aspect = video.videoHeight / video.videoWidth;
+  const fov = 0.6;
+  allObjects.forEach((obj) => {
+    const cam = cameraPath[obj.frameIndex];
+    if (!cam) return;
+
+    const cx = (obj.bbox[0] + obj.bbox[2] / 2) / video.videoWidth;
+    const cy = (obj.bbox[1] + obj.bbox[3] / 2) / video.videoHeight;
+    const sx = (cx - 0.5) * 2;
+    const sy = -(cy - 0.5) * 2 * aspect;
+    const d = 1.5 + cy * 4 + 0.5; // match depth formula
+
+    const dx = cam.lookAt.x - cam.position.x;
+    const dz = cam.lookAt.z - cam.position.z;
+    const len = Math.sqrt(dx * dx + dz * dz) || 1;
+    const fwdX = dx / len, fwdZ = dz / len;
+    const rX = fwdZ, rZ = -fwdX;
+
+    obj.position3D = {
+      x: cam.position.x + fwdX * d + rX * sx * d * fov,
+      y: cam.position.y + sy * d * fov,
+      z: cam.position.z + fwdZ * d + (-fwdX) * sx * d * fov * 0 + rZ * 0,
+    };
+    // Simplified: just project along z
+    obj.position3D.z = cam.position.z + fwdZ * d;
+    obj.position3D.x = cam.position.x + rX * sx * d * fov;
+    obj.position3D.y = sy * d * fov;
+  });
 
   onProgress?.('분석 완료!', 100);
 
   const result: VideoAnalysis = {
-    frames, allObjects,
+    frames, allObjects, pointCloud, cameraPath,
     videoWidth: video.videoWidth,
     videoHeight: video.videoHeight,
     duration: video.duration,

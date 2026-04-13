@@ -114,7 +114,7 @@ export function Video3DMapPage() {
               <div className="stat-item"><span className="stat-value">{analysis.allObjects.length}</span><span className="stat-label">객체</span></div>
               <div className="stat-item">
                 <span className="stat-value">
-                  {analysis.frames.reduce((sum, f) => sum + f.pointCloud.count, 0).toLocaleString()}
+                  {analysis.pointCloud.count.toLocaleString()}
                 </span>
                 <span className="stat-label">포인트</span>
               </div>

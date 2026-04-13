@@ -8,7 +8,7 @@ export interface DetectedObject {
   description: string;
   color: string;
   position3D: { x: number; y: number; z: number };
-  depth: number; // estimated depth 0~1
+  depth: number;
 }
 
 export interface FrameData {
@@ -17,17 +17,25 @@ export interface FrameData {
   imageData: ImageData;
   imageUrl: string;
   objects: DetectedObject[];
-  // Point cloud data for this frame
-  pointCloud: {
-    positions: Float32Array;
-    colors: Float32Array;
-    count: number;
-  };
+}
+
+export interface UnifiedPointCloud {
+  positions: Float32Array;
+  colors: Float32Array;
+  count: number;
+}
+
+export interface CameraWaypoint {
+  position: { x: number; y: number; z: number };
+  lookAt: { x: number; y: number; z: number };
+  frameIndex: number;
 }
 
 export interface VideoAnalysis {
   frames: FrameData[];
   allObjects: DetectedObject[];
+  pointCloud: UnifiedPointCloud;
+  cameraPath: CameraWaypoint[];
   videoWidth: number;
   videoHeight: number;
   duration: number;
